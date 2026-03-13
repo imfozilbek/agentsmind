@@ -2,6 +2,7 @@ import { createDatabase } from "./db/schema.ts";
 import { cleanupRateLimits } from "./db/queries.ts";
 import { GitRepo } from "./git/repo.ts";
 import { createApp } from "./server/app.ts";
+import { addClient, removeClient, clientCount } from "./server/ws.ts";
 
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = process.env.DATA_DIR || "./data";
@@ -37,5 +38,24 @@ console.log(`
 
 export default {
   port: PORT,
-  fetch: app.fetch,
+  fetch(req: Request, server: import("bun").Server<undefined>) {
+    // WebSocket upgrade
+    if (new URL(req.url).pathname === "/ws") {
+      if (server.upgrade(req)) return;
+      return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+    return app.fetch(req, server);
+  },
+  websocket: {
+    open(ws: import("bun").ServerWebSocket<undefined>) {
+      addClient(ws);
+      ws.send(JSON.stringify({ type: "connected", data: { clients: clientCount() } }));
+    },
+    message(_ws: import("bun").ServerWebSocket<undefined>, _msg: string | Buffer) {
+      // No client-to-server messages needed yet
+    },
+    close(ws: import("bun").ServerWebSocket<undefined>) {
+      removeClient(ws);
+    },
+  },
 };
