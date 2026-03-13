@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --hot src/main.ts",
     "start": "bun src/main.ts",
+    "agents": "bun src/run-agents.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
