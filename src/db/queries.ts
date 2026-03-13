@@ -286,6 +286,79 @@ export function cleanupRateLimits(db: Database): void {
   db.query("DELETE FROM rate_limits WHERE window_start < ?").run(cutoff);
 }
 
+// ─── Metrics ───
+
+export interface Metric {
+  id: number;
+  agent_id: string;
+  event: string;
+  value: number;
+  meta: string;
+  created_at: string;
+}
+
+export function recordMetric(db: Database, agentId: string, event: string, value: number, meta: Record<string, unknown> = {}): void {
+  db.query(
+    "INSERT INTO metrics (agent_id, event, value, meta) VALUES (?, ?, ?, ?)"
+  ).run(agentId, event, value, JSON.stringify(meta));
+}
+
+export function getAgentMetrics(db: Database, agentId: string, event?: string, limit = 100): Metric[] {
+  if (event) {
+    return db.query<Metric, [string, string, number]>(
+      "SELECT * FROM metrics WHERE agent_id = ? AND event = ? ORDER BY created_at DESC LIMIT ?"
+    ).all(agentId, event, limit);
+  }
+  return db.query<Metric, [string, number]>(
+    "SELECT * FROM metrics WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?"
+  ).all(agentId, limit);
+}
+
+export function getMetricsSummary(db: Database) {
+  // AI call stats
+  const aiCalls = db.query<{ count: number; total_tokens: number; total_latency: number; total_prompt: number; total_completion: number }, []>(`
+    SELECT
+      COUNT(*) as count,
+      COALESCE(SUM(value), 0) as total_tokens,
+      COALESCE(SUM(json_extract(meta, '$.latency_ms')), 0) as total_latency,
+      COALESCE(SUM(json_extract(meta, '$.prompt_tokens')), 0) as total_prompt,
+      COALESCE(SUM(json_extract(meta, '$.completion_tokens')), 0) as total_completion
+    FROM metrics WHERE event = 'ai_chat'
+  `).get()!;
+
+  // Task completion stats
+  const taskStats = db.query<{ completed: number; failed: number; avg_duration: number }, []>(`
+    SELECT
+      COUNT(CASE WHEN event = 'task_done' THEN 1 END) as completed,
+      COUNT(CASE WHEN event = 'task_failed' THEN 1 END) as failed,
+      COALESCE(AVG(CASE WHEN event = 'task_done' THEN value END), 0) as avg_duration
+    FROM metrics WHERE event IN ('task_done', 'task_failed')
+  `).get()!;
+
+  // Per-agent stats
+  const agentStats = db.query<{ agent_id: string; ai_calls: number; tokens: number; tasks_done: number; tasks_failed: number; avg_task_ms: number }, []>(`
+    SELECT
+      agent_id,
+      COUNT(CASE WHEN event = 'ai_chat' THEN 1 END) as ai_calls,
+      COALESCE(SUM(CASE WHEN event = 'ai_chat' THEN value ELSE 0 END), 0) as tokens,
+      COUNT(CASE WHEN event = 'task_done' THEN 1 END) as tasks_done,
+      COUNT(CASE WHEN event = 'task_failed' THEN 1 END) as tasks_failed,
+      COALESCE(AVG(CASE WHEN event = 'task_done' THEN value END), 0) as avg_task_ms
+    FROM metrics
+    GROUP BY agent_id
+    ORDER BY tokens DESC
+  `).all();
+
+  // Recent AI latency (last 50 calls)
+  const recentLatency = db.query<{ latency: number; created_at: string; agent_id: string }, []>(`
+    SELECT json_extract(meta, '$.latency_ms') as latency, created_at, agent_id
+    FROM metrics WHERE event = 'ai_chat'
+    ORDER BY created_at DESC LIMIT 50
+  `).all();
+
+  return { aiCalls, taskStats, agentStats, recentLatency };
+}
+
 // ─── Stats ───
 
 export function getStats(db: Database) {

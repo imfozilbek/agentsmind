@@ -82,6 +82,18 @@ export function createDatabase(path: string): Database {
       count INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (agent_id, action, window_start)
     );
+
+    CREATE TABLE IF NOT EXISTS metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      value REAL NOT NULL DEFAULT 0,
+      meta TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_metrics_event ON metrics(event);
+    CREATE INDEX IF NOT EXISTS idx_metrics_time ON metrics(created_at);
   `);
 
   return db;
