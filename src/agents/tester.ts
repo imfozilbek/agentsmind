@@ -57,7 +57,6 @@ export class TesterAgent extends BaseAgent {
 
     for (const task of tasks) {
       if (task.parent_id) continue; // Only test parent tasks (full features)
-      if (!task.output) continue;
 
       console.log(`[${this.config.id}] Writing tests for task #${task.id}: "${task.title}"`);
       await this.writeAndRunTests(task);
