@@ -3,6 +3,7 @@ import { html, raw } from "hono/html";
 import type { Database } from "bun:sqlite";
 import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
+import { broadcast } from "./ws.ts";
 
 export function dashboardRoutes(db: Database, git: GitRepo) {
   const app = new Hono();
@@ -96,6 +97,7 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     }>();
     if (!title?.trim()) return c.json({ error: "Title required" }, 400);
     const task = q.createTask(db, title.trim(), description ?? "", priority ?? 0, null, parent_id ?? null);
+    broadcast({ type: "task_created", data: task });
     return c.json(task, 201);
   });
 
@@ -112,6 +114,7 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     const fields = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority">>>();
     const task = q.updateTask(db, id, fields);
     if (!task) return c.json({ error: "Not found" }, 404);
+    broadcast({ type: "task_updated", data: task });
     return c.json(task);
   });
 
@@ -120,6 +123,7 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Not found" }, 404);
     db.query("DELETE FROM tasks WHERE id = ?").run(id);
+    broadcast({ type: "task_deleted", data: { id } });
     return c.json({ ok: true });
   });
 
@@ -922,7 +926,57 @@ const CSS = `
 
 const JS = `
   const REFRESH_MS = 3000;
+  const POLL_FALLBACK_MS = 10000;
   let lastData = null;
+  let ws = null;
+  let wsConnected = false;
+  let pollTimer = null;
+
+  // ─── WebSocket ───
+
+  function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = function() {
+      wsConnected = true;
+      document.getElementById('status-dot').classList.remove('error');
+      document.getElementById('last-update').textContent = 'live (ws) — ' + new Date().toLocaleTimeString();
+      // Stop polling since WS is active
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      // Initial full fetch
+      fetchData();
+    };
+
+    ws.onmessage = function(e) {
+      try {
+        const event = JSON.parse(e.data);
+        handleWSEvent(event);
+      } catch {}
+    };
+
+    ws.onclose = function() {
+      wsConnected = false;
+      document.getElementById('status-dot').classList.add('error');
+      document.getElementById('last-update').textContent = 'reconnecting...';
+      // Fall back to polling
+      if (!pollTimer) pollTimer = setInterval(fetchData, POLL_FALLBACK_MS);
+      // Try reconnect
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = function() { ws.close(); };
+  }
+
+  function handleWSEvent(event) {
+    // On any mutation, do a quick full refresh
+    const types = ['task_created', 'task_updated', 'task_assigned', 'task_deleted',
+                   'post_created', 'commit_pushed'];
+    if (types.includes(event.type)) {
+      fetchData();
+    }
+    document.getElementById('last-update').textContent = 'live (ws) — ' + new Date().toLocaleTimeString();
+  }
 
   async function fetchData() {
     try {
@@ -935,7 +989,9 @@ const JS = `
       lastData = data;
       render(data, metrics);
       document.getElementById('status-dot').classList.remove('error');
-      document.getElementById('last-update').textContent = 'live — ' + new Date().toLocaleTimeString();
+      if (!wsConnected) {
+        document.getElementById('last-update').textContent = 'polling — ' + new Date().toLocaleTimeString();
+      }
     } catch (e) {
       document.getElementById('status-dot').classList.add('error');
       document.getElementById('last-update').textContent = 'disconnected';
@@ -1433,6 +1489,6 @@ const JS = `
     return d.innerHTML;
   }
 
-  fetchData();
-  setInterval(fetchData, REFRESH_MS);
+  connectWS();
+  pollTimer = setInterval(fetchData, POLL_FALLBACK_MS);
 `;
