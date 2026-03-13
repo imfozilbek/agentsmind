@@ -117,6 +117,24 @@ export function createDatabase(path: string): Database {
       VALUES (new.id, new.file_path, new.content, new.commit_hash);
     END;
 
+    CREATE TABLE IF NOT EXISTS task_dependencies (
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (task_id, depends_on_id),
+      CHECK (task_id != depends_on_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_taskdep_task ON task_dependencies(task_id);
+    CREATE INDEX IF NOT EXISTS idx_taskdep_dep ON task_dependencies(depends_on_id);
+
+    CREATE TABLE IF NOT EXISTS task_status_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_statuslog_task ON task_status_log(task_id);
+
     CREATE TABLE IF NOT EXISTS metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       agent_id TEXT NOT NULL,

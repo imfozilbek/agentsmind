@@ -164,15 +164,118 @@ export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, 
   sets.push("updated_at = datetime('now')");
   values.push(id);
 
-  return db.prepare<Task, (string | number | null)[]>(
+  const result = db.prepare<Task, (string | number | null)[]>(
     `UPDATE tasks SET ${sets.join(", ")} WHERE id = ? RETURNING *`
   ).get(...values);
+
+  // Log status change for timeline
+  if (result && fields.status) {
+    logStatusChange(db, id, fields.status);
+  }
+
+  return result;
 }
 
 export function getSubtasks(db: Database, parentId: number): Task[] {
   return db.query<Task, [number]>(
     "SELECT * FROM tasks WHERE parent_id = ? ORDER BY priority DESC, created_at ASC"
   ).all(parentId);
+}
+
+// ─── Task Dependencies ───
+
+export interface TaskDependency {
+  task_id: number;
+  depends_on_id: number;
+  created_at: string;
+}
+
+export function wouldCreateCycle(db: Database, taskId: number, dependsOnId: number): boolean {
+  if (taskId === dependsOnId) return true;
+  const row = db.query<{ found: number }, [number, number]>(
+    `WITH RECURSIVE dep_chain(id) AS (
+      SELECT depends_on_id FROM task_dependencies WHERE task_id = ?
+      UNION
+      SELECT td.depends_on_id FROM task_dependencies td
+      JOIN dep_chain dc ON dc.id = td.task_id
+    )
+    SELECT 1 as found FROM dep_chain WHERE id = ? LIMIT 1`
+  ).get(dependsOnId, taskId);
+  return !!row;
+}
+
+export function addDependency(db: Database, taskId: number, dependsOnId: number): void {
+  if (wouldCreateCycle(db, taskId, dependsOnId)) {
+    throw new Error("Adding this dependency would create a cycle");
+  }
+  db.query("INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)").run(taskId, dependsOnId);
+}
+
+export function removeDependency(db: Database, taskId: number, dependsOnId: number): void {
+  db.query("DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_id = ?").run(taskId, dependsOnId);
+}
+
+export function getDependencies(db: Database, taskId: number): Task[] {
+  return db.query<Task, [number]>(
+    `SELECT t.* FROM tasks t
+     JOIN task_dependencies td ON td.depends_on_id = t.id
+     WHERE td.task_id = ?
+     ORDER BY t.id`
+  ).all(taskId);
+}
+
+export function getDependents(db: Database, taskId: number): Task[] {
+  return db.query<Task, [number]>(
+    `SELECT t.* FROM tasks t
+     JOIN task_dependencies td ON td.task_id = t.id
+     WHERE td.depends_on_id = ?
+     ORDER BY t.id`
+  ).all(taskId);
+}
+
+export function getReadyTasks(db: Database): Task[] {
+  return db.query<Task, []>(
+    `SELECT t.* FROM tasks t
+     WHERE t.status = 'todo'
+     AND NOT EXISTS (
+       SELECT 1 FROM task_dependencies td
+       JOIN tasks dep ON dep.id = td.depends_on_id
+       WHERE td.task_id = t.id AND dep.status != 'done'
+     )
+     ORDER BY t.priority DESC, t.created_at ASC`
+  ).all();
+}
+
+export interface DepMapEntry {
+  task_id: number;
+  depends_on_id: number;
+  dep_status: string;
+}
+
+export function getDependencyMap(db: Database): DepMapEntry[] {
+  return db.query<DepMapEntry, []>(
+    `SELECT td.task_id, td.depends_on_id, t.status as dep_status
+     FROM task_dependencies td JOIN tasks t ON t.id = td.depends_on_id`
+  ).all();
+}
+
+// ─── Task Status Log ───
+
+export interface StatusLogEntry {
+  id: number;
+  task_id: number;
+  status: string;
+  changed_at: string;
+}
+
+export function logStatusChange(db: Database, taskId: number, status: string): void {
+  db.query("INSERT INTO task_status_log (task_id, status) VALUES (?, ?)").run(taskId, status);
+}
+
+export function getStatusLog(db: Database, taskId: number): StatusLogEntry[] {
+  return db.query<StatusLogEntry, [number]>(
+    "SELECT * FROM task_status_log WHERE task_id = ? ORDER BY changed_at ASC"
+  ).all(taskId);
 }
 
 // ─── Commits ───
