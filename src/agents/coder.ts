@@ -1,3 +1,6 @@
+import { $ } from "bun";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
@@ -26,20 +29,38 @@ interface CodeResponse {
 }
 
 export class CoderAgent extends BaseAgent {
+  private repoPath: string = "";
+
   get role() { return "coder"; }
 
+  override async start(): Promise<void> {
+    this.repoPath = this.config.workDir
+      ? join(this.config.workDir, this.config.id)
+      : join("data", "workspaces", this.config.id);
+
+    await this.initRepo();
+    await super.start();
+  }
+
+  private async initRepo(): Promise<void> {
+    if (!existsSync(this.repoPath)) {
+      mkdirSync(this.repoPath, { recursive: true });
+      await $`git -C ${this.repoPath} init`.quiet();
+      // Initial empty commit so we always have a parent
+      await $`git -C ${this.repoPath} commit --allow-empty -m "init"`.quiet();
+      console.log(`[${this.config.id}] Initialized workspace at ${this.repoPath}`);
+    }
+  }
+
   protected async tick(): Promise<void> {
-    // Find unassigned subtasks (tasks with parent_id that are still todo)
     const tasks = await this.get<Task[]>("/tasks?status=todo");
     const available = tasks.filter(t => t.parent_id && !t.assigned_to);
 
     if (available.length === 0) return;
 
-    // Take the highest priority task
     const task = available[0]!;
     await this.api("POST", `/tasks/${task.id}/assign`, { agent_id: this.config.id });
     console.log(`[${this.config.id}] Working on: "${task.title}"`);
-
     await this.post("general", `Taking task #${task.id}: "${task.title}"`);
 
     try {
@@ -52,14 +73,12 @@ export class CoderAgent extends BaseAgent {
   }
 
   private async implement(task: Task): Promise<void> {
-    // Get parent task for context
     let context = "";
     if (task.parent_id) {
       const parent = await this.get<Task>(`/tasks/${task.parent_id}`);
       context = `\nParent task: ${parent.title}\nParent description: ${parent.description}`;
     }
 
-    // Get sibling tasks for awareness
     const siblings = task.parent_id
       ? await this.get<Task[]>(`/tasks/${task.parent_id}/subtasks`)
       : [];
@@ -81,19 +100,52 @@ export class CoderAgent extends BaseAgent {
       const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       result = JSON.parse(cleaned);
     } catch {
-      console.error(`[${this.config.id}] Failed to parse coder response:`, response);
+      console.error(`[${this.config.id}] Failed to parse coder response`);
       await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
       return;
     }
 
-    console.log(`[${this.config.id}] Generated ${result.files.length} files for task #${task.id}`);
+    // Write files to workspace
+    for (const file of result.files) {
+      const filePath = join(this.repoPath, file.path);
+      const dir = join(filePath, "..");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      await Bun.write(filePath, file.content);
+    }
 
-    // Save generated code to task output and mark for review
+    // Git add + commit
+    await $`git -C ${this.repoPath} add -A`.quiet();
+    const commitMsg = result.commit_message || `task #${task.id}: ${task.title}`;
+    await $`git -C ${this.repoPath} commit -m ${commitMsg} --allow-empty`.quiet();
+
+    // Get commit hash
+    const hash = (await $`git -C ${this.repoPath} rev-parse HEAD`.text()).trim();
+    console.log(`[${this.config.id}] Committed ${hash.slice(0, 8)} for task #${task.id}`);
+
+    // Create bundle and push to server
+    const bundlePath = join(this.repoPath, `task-${task.id}.bundle`);
+    try {
+      await $`git -C ${this.repoPath} bundle create ${bundlePath} --all`.quiet();
+      const pushResult = await this.pushBundle(bundlePath);
+      console.log(`[${this.config.id}] Pushed ${pushResult.indexed.length} commits to server`);
+    } catch (err) {
+      console.error(`[${this.config.id}] Push failed:`, err);
+      // Continue anyway — code is saved locally and in task output
+    } finally {
+      if (existsSync(bundlePath)) await $`rm ${bundlePath}`.quiet();
+    }
+
+    // Save output + commit hash to task, mark for review
     const output = JSON.stringify(result, null, 2);
-    await this.api("PATCH", `/tasks/${task.id}`, { status: "review", output });
+    await this.api("PATCH", `/tasks/${task.id}`, {
+      status: "review",
+      output,
+      commit_hash: hash,
+    });
+
     await this.post(
       "general",
-      `Completed task #${task.id}: "${task.title}" → ${result.files.length} files. Ready for review.`,
+      `Completed task #${task.id}: "${task.title}" → ${result.files.length} files, commit ${hash.slice(0, 8)}. Ready for review.`,
     );
   }
 }

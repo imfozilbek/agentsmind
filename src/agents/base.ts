@@ -5,6 +5,7 @@ export interface AgentConfig {
   apiKey: string;
   serverUrl: string;
   ai: AIConfig;
+  workDir?: string;
   pollInterval?: number;
 }
 
@@ -71,5 +72,26 @@ export abstract class BaseAgent {
   protected async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<string> {
     const response = await this.ai.chat(messages, options);
     return response.content;
+  }
+
+  protected async pushBundle(bundlePath: string): Promise<{ indexed: string[] }> {
+    const file = Bun.file(bundlePath);
+    const body = await file.arrayBuffer();
+
+    const res = await fetch(`${this.config.serverUrl}/api/commits/push`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        Authorization: `Bearer ${this.config.apiKey}`,
+      },
+      body,
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Push failed (${res.status}): ${err}`);
+    }
+
+    return res.json() as Promise<{ indexed: string[] }>;
   }
 }
