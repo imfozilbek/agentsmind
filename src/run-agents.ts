@@ -12,6 +12,8 @@ if (!AI_API_KEY) {
   process.exit(1);
 }
 
+const STUCK_TIMEOUT_MIN = Number(process.env.STUCK_TIMEOUT_MIN) || 0.5;
+
 const runner = new AgentRunner({
   serverUrl: SERVER_URL,
   ai: {
@@ -27,6 +29,7 @@ const runner = new AgentRunner({
     reviewers: 1,
     testers: 1,
   },
+  stuckTimeoutMinutes: STUCK_TIMEOUT_MIN,
 });
 
 // Graceful shutdown

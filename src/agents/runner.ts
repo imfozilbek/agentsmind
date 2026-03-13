@@ -94,13 +94,14 @@ export class AgentRunner {
     const timeoutMs = (this.config.stuckTimeoutMinutes ?? 10) * 60 * 1000;
     console.log(`[watchdog] Monitoring stuck tasks (timeout: ${this.config.stuckTimeoutMinutes ?? 10}min)`);
 
+    const checkInterval = Math.max(timeoutMs / 2, 10_000);
     this.watchdogTimer = setInterval(async () => {
       try {
         await this.checkStuckTasks(timeoutMs);
       } catch (err) {
         console.error("[watchdog] Error:", err);
       }
-    }, 60_000); // Check every minute
+    }, checkInterval);
   }
 
   private async checkStuckTasks(timeoutMs: number): Promise<void> {
