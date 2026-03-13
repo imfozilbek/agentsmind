@@ -56,7 +56,7 @@ export class CoderAgent extends BaseAgent {
   }
 
   protected async tick(): Promise<void> {
-    const tasks = await this.get<Task[]>("/tasks?status=todo");
+    const tasks = await this.get<Task[]>("/tasks/ready");
     const available = tasks.filter(t => t.parent_id && !t.assigned_to);
 
     if (available.length === 0) return;
