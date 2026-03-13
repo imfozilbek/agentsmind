@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
@@ -8,6 +10,7 @@ Rules:
 - Test happy paths, edge cases, and error cases
 - Use bun:test (import { test, expect, describe } from "bun:test")
 - Keep tests readable and well-organized
+- Tests must be self-contained — mock external dependencies if needed
 - Return your response as JSON:
 
 {
@@ -24,33 +27,64 @@ interface TestResponse {
   summary: string;
 }
 
+interface TestResult {
+  passed: boolean;
+  output: string;
+  exitCode: number;
+}
+
 export class TesterAgent extends BaseAgent {
+  private repoPath: string = "";
+
   get role() { return "tester"; }
 
+  override async start(): Promise<void> {
+    this.repoPath = resolve(
+      this.config.workDir
+        ? join(this.config.workDir, this.config.id)
+        : join("data", "workspaces", this.config.id)
+    );
+
+    if (!existsSync(this.repoPath)) {
+      mkdirSync(this.repoPath, { recursive: true });
+    }
+
+    await super.start();
+  }
+
   protected async tick(): Promise<void> {
-    // Find tasks that are done but might not have tests
     const tasks = await this.get<Task[]>("/tasks?status=done");
 
     for (const task of tasks) {
-      // Skip tasks already tested (check via board messages)
-      // Simple heuristic: if we already posted about testing this task, skip
       if (task.parent_id) continue; // Only test parent tasks (full features)
+      if (!task.output) continue;
 
       console.log(`[${this.config.id}] Writing tests for task #${task.id}: "${task.title}"`);
-      await this.writeTests(task);
+      await this.writeAndRunTests(task);
     }
   }
 
-  private async writeTests(task: Task): Promise<void> {
-    // Get subtasks for context
+  private async writeAndRunTests(task: Task): Promise<void> {
+    // Gather code from subtasks
     const subtasks = await this.get<Task[]>(`/tasks/${task.id}/subtasks`);
-    const subtaskList = subtasks.map(s => `- ${s.title}: ${s.description}`).join("\n");
+    const done = subtasks.filter(s => s.status === "done" || s.status === "review");
+
+    let codeContext = "";
+    for (const sub of done) {
+      if (!sub.output) continue;
+      try {
+        const parsed = JSON.parse(sub.output) as { files: { path: string; content: string }[] };
+        for (const file of parsed.files) {
+          codeContext += `\nFile: ${file.path}\n\`\`\`typescript\n${file.content}\n\`\`\`\n`;
+        }
+      } catch { /* skip */ }
+    }
 
     const response = await this.chat([
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content: `Write tests for this feature:\n\nFeature: ${task.title}\nDescription: ${task.description}\n\nImplemented subtasks:\n${subtaskList}`,
+        content: `Write tests for this feature:\n\nFeature: ${task.title}\nDescription: ${task.description}\n\nSource code:\n${codeContext}`,
       },
     ], { temperature: 0.2, maxTokens: 8192 });
 
@@ -59,11 +93,67 @@ export class TesterAgent extends BaseAgent {
       const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       result = JSON.parse(cleaned);
     } catch {
-      console.error(`[${this.config.id}] Failed to parse test response:`, response);
+      console.error(`[${this.config.id}] Failed to parse test response`);
       return;
     }
 
-    console.log(`[${this.config.id}] Generated ${result.files.length} test files for task #${task.id}`);
-    await this.post("general", `Tests written for task #${task.id}: "${task.title}" — ${result.summary}`);
+    // Write source files from subtasks to workspace
+    for (const sub of done) {
+      if (!sub.output) continue;
+      try {
+        const parsed = JSON.parse(sub.output) as { files: { path: string; content: string }[] };
+        for (const file of parsed.files) {
+          await this.writeFile(file.path, file.content);
+        }
+      } catch { /* skip */ }
+    }
+
+    // Write test files to workspace
+    for (const file of result.files) {
+      await this.writeFile(file.path, file.content);
+    }
+
+    // Run tests
+    const testFiles = result.files.map(f => f.path);
+    const testResult = await this.runTests(testFiles);
+
+    console.log(`[${this.config.id}] Tests for task #${task.id}: ${testResult.passed ? "PASSED" : "FAILED"} (exit ${testResult.exitCode})`);
+
+    const status = testResult.passed ? "passed" : "failed";
+    const outputTruncated = testResult.output.length > 2000
+      ? testResult.output.slice(-2000)
+      : testResult.output;
+
+    await this.post(
+      "general",
+      `Tests ${status} for task #${task.id}: "${task.title}" — ${result.summary}\n\`\`\`\n${outputTruncated}\n\`\`\``,
+    );
+  }
+
+  private async writeFile(filePath: string, content: string): Promise<void> {
+    const fullPath = join(this.repoPath, filePath);
+    const dir = join(fullPath, "..");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    await Bun.write(fullPath, content);
+  }
+
+  private async runTests(testFiles: string[]): Promise<TestResult> {
+    const absolutePaths = testFiles.map(f => join(this.repoPath, f));
+
+    const proc = Bun.spawnSync(["bun", "test", ...absolutePaths], {
+      cwd: this.repoPath,
+      env: { ...process.env, NO_COLOR: "1" },
+      timeout: 30_000,
+    });
+
+    const stdout = proc.stdout.toString();
+    const stderr = proc.stderr.toString();
+    const output = (stdout + "\n" + stderr).trim();
+
+    return {
+      passed: proc.exitCode === 0,
+      output,
+      exitCode: proc.exitCode ?? 1,
+    };
   }
 }
