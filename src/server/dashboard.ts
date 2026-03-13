@@ -155,6 +155,38 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     return c.json({ ok: true });
   });
 
+  // ─── File Browser API ───
+
+  app.get("/api/dashboard/files", async (c) => {
+    const commits = q.listCommits(db, undefined, 1, 0);
+    if (commits.length === 0) return c.json({ hash: null, tree: [] });
+    const hash = commits[0]!.hash;
+    const exists = await git.commitExists(hash);
+    if (!exists) return c.json({ hash, tree: [] });
+    try {
+      const files = await git.listFiles(hash);
+      const tree = buildFileTree(files);
+      return c.json({ hash, tree });
+    } catch {
+      return c.json({ hash, tree: [] });
+    }
+  });
+
+  app.get("/api/dashboard/files/content", async (c) => {
+    const path = c.req.query("path");
+    if (!path) return c.json({ error: "path required" }, 400);
+    const commits = q.listCommits(db, undefined, 1, 0);
+    if (commits.length === 0) return c.json({ error: "No commits" }, 404);
+    const hash = commits[0]!.hash;
+    try {
+      const content = await git.showFile(hash, path);
+      const ext = path.split(".").pop() || "";
+      return c.json({ path, content, language: extToLang(ext), hash });
+    } catch {
+      return c.json({ error: "File not found" }, 404);
+    }
+  });
+
   // Metrics API (public)
   app.get("/api/dashboard/metrics", (c) => {
     return c.json(q.getMetricsSummary(db));
@@ -166,6 +198,52 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
   });
 
   return app;
+}
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: "file" | "dir";
+  children?: FileNode[];
+}
+
+function buildFileTree(paths: string[]): FileNode[] {
+  const root: FileNode[] = [];
+  for (const p of paths) {
+    const parts = p.split("/");
+    let current = root;
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i]!;
+      const isFile = i === parts.length - 1;
+      const partialPath = parts.slice(0, i + 1).join("/");
+      let existing = current.find((n) => n.name === name);
+      if (!existing) {
+        existing = { name, path: partialPath, type: isFile ? "file" : "dir" };
+        if (!isFile) existing.children = [];
+        current.push(existing);
+      }
+      if (!isFile) current = existing.children!;
+    }
+  }
+  // Sort: dirs first, then files, alphabetically
+  const sortTree = (nodes: FileNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const n of nodes) if (n.children) sortTree(n.children);
+  };
+  sortTree(root);
+  return root;
+}
+
+function extToLang(ext: string): string {
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+    py: "python", rs: "rust", go: "go", sql: "sql", sh: "shell", bash: "shell",
+    json: "json", yaml: "yaml", yml: "yaml", md: "markdown", css: "css", html: "html",
+  };
+  return map[ext.toLowerCase()] || "";
 }
 
 function dashboardHTML() {
@@ -239,6 +317,17 @@ function dashboardHTML() {
       <button class="btn-load-more" id="commits-load-more" onclick="loadMoreCommits()" style="display:none">Load More</button>
     </section>
   </div>
+
+  <section class="panel files-panel" id="files-panel">
+    <div class="panel-header">
+      <h2>Files</h2>
+      <span id="files-commit-hash" class="commit-hash" style="font-size:11px"></span>
+    </div>
+    <div class="files-browser" id="files-browser">
+      <div class="files-tree" id="files-tree"><div class="empty">No files</div></div>
+      <div class="files-content" id="files-content"><div class="empty">Select a file to view</div></div>
+    </div>
+  </section>
 
   <section class="panel metrics-panel">
     <h2>Metrics</h2>
@@ -973,6 +1062,87 @@ const CSS = `
     font-size: 13px;
   }
 
+  /* File browser */
+  .files-panel {
+    margin-bottom: 24px;
+    max-height: none;
+  }
+
+  .files-browser {
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    min-height: 300px;
+    max-height: 500px;
+  }
+
+  .files-tree {
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 8px 0;
+    background: var(--bg);
+  }
+
+  .tree-item {
+    padding: 4px 12px;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+  }
+
+  .tree-item:hover { background: var(--accent-dim); }
+  .tree-item.active { background: var(--accent-dim); color: var(--accent); }
+  .tree-item.dir { color: var(--text-dim); font-weight: 500; }
+
+  .tree-children { display: block; }
+  .tree-children.collapsed { display: none; }
+
+  .files-content {
+    overflow: auto;
+    background: var(--bg);
+  }
+
+  .file-viewer {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 0;
+  }
+
+  .fv-line {
+    display: flex;
+    min-height: 1.6em;
+  }
+
+  .fv-num {
+    width: 50px;
+    text-align: right;
+    padding-right: 12px;
+    color: var(--text-dim);
+    user-select: none;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  .fv-code {
+    padding-left: 12px;
+    white-space: pre;
+    flex: 1;
+  }
+
+  .hl-kw { color: var(--accent); }
+  .hl-str { color: var(--green); }
+  .hl-cmt { color: var(--text-dim); }
+  .hl-num { color: var(--orange); }
+
   /* Light theme */
   [data-theme="light"] {
     --bg: #f4f4f8;
@@ -1049,6 +1219,8 @@ const CSS = `
     .task-board { grid-template-columns: 1fr; }
     .modal { width: 98vw; max-height: 90vh; }
     .task-detail-grid { grid-template-columns: 1fr; }
+    .files-browser { grid-template-columns: 1fr; }
+    .files-tree { max-height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
   }
 `;
 
@@ -1190,6 +1362,7 @@ const JS = `
     renderPosts(data.posts);
     renderCommits(data.commits);
     renderMetrics(metrics);
+    loadFileTree();
   }
 
   function renderStats(s) {
@@ -1722,6 +1895,97 @@ const JS = `
     }
 
     el.innerHTML = html;
+  }
+
+  // ─── File Browser ───
+
+  var lastFileHash = null;
+
+  function loadFileTree() {
+    fetch('/api/dashboard/files').then(function(r) { return r.json(); }).then(function(data) {
+      if (!data.hash || data.hash === lastFileHash) return;
+      lastFileHash = data.hash;
+      document.getElementById('files-commit-hash').textContent = data.hash ? data.hash.slice(0, 8) : '';
+      var el = document.getElementById('files-tree');
+      if (!data.tree || data.tree.length === 0) {
+        el.innerHTML = '<div class="empty">No files</div>';
+        return;
+      }
+      el.innerHTML = renderTreeNodes(data.tree, 0);
+    }).catch(function() {});
+  }
+
+  function renderTreeNodes(nodes, depth) {
+    var html = '';
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var pad = 'padding-left:' + (12 + depth * 16) + 'px';
+      if (n.type === 'dir') {
+        html += '<div class="tree-item dir" style="' + pad + '" onclick="toggleDir(this)">' +
+          (n.children && n.children.length > 0 ? '▸ ' : '  ') + esc(n.name) + '</div>';
+        if (n.children && n.children.length > 0) {
+          html += '<div class="tree-children collapsed">' + renderTreeNodes(n.children, depth + 1) + '</div>';
+        }
+      } else {
+        html += '<div class="tree-item file" style="' + pad + '" onclick="viewBrowserFile(\\'' + esc(n.path) + '\\')" data-path="' + esc(n.path) + '">📄 ' + esc(n.name) + '</div>';
+      }
+    }
+    return html;
+  }
+
+  function toggleDir(el) {
+    var children = el.nextElementSibling;
+    if (!children || !children.classList.contains('tree-children')) return;
+    children.classList.toggle('collapsed');
+    var text = el.textContent;
+    if (text.startsWith('▸')) el.textContent = text.replace('▸', '▾');
+    else if (text.startsWith('▾')) el.textContent = text.replace('▾', '▸');
+  }
+
+  async function viewBrowserFile(path) {
+    document.querySelectorAll('#files-tree .tree-item').forEach(function(el) { el.classList.remove('active'); });
+    var active = document.querySelector('#files-tree .tree-item[data-path="' + path + '"]');
+    if (active) active.classList.add('active');
+
+    var content = document.getElementById('files-content');
+    content.innerHTML = '<div class="modal-loading">Loading...</div>';
+
+    try {
+      var res = await fetch('/api/dashboard/files/content?path=' + encodeURIComponent(path));
+      var data = await res.json();
+      renderFileViewer(data.content, data.language);
+    } catch {
+      content.innerHTML = '<div class="empty">Failed to load file</div>';
+    }
+  }
+
+  function renderFileViewer(text, lang) {
+    var el = document.getElementById('files-content');
+    var lines = text.split('\\n');
+    var html = '<div class="file-viewer">';
+    for (var i = 0; i < lines.length; i++) {
+      html += '<div class="fv-line"><div class="fv-num">' + (i + 1) + '</div><div class="fv-code">' + highlightLine(esc(lines[i]), lang) + '</div></div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function highlightLine(html, lang) {
+    if (!lang) return html;
+    if (lang === 'typescript' || lang === 'javascript') {
+      html = html.replace(/\\/\\/.*$/gm, '<span class="hl-cmt">$&</span>');
+      html = html.replace(/\\b(const|let|var|function|return|if|else|for|while|class|extends|import|export|from|async|await|new|throw|try|catch|finally|typeof|instanceof|interface|type|enum|readonly|public|private|protected|static|default|null|undefined|true|false|void)\\b/g, '<span class="hl-kw">$1</span>');
+      html = html.replace(/(["'])(?:(?!\\1)[^\\\\]|\\\\.)*\\1/g, '<span class="hl-str">$&</span>');
+      html = html.replace(/\\b(\\d+\\.?\\d*)\\b/g, '<span class="hl-num">$1</span>');
+    } else if (lang === 'python') {
+      html = html.replace(/#.*$/gm, '<span class="hl-cmt">$&</span>');
+      html = html.replace(/\\b(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|pass|break|continue|yield|lambda|None|True|False|and|or|not|in|is)\\b/g, '<span class="hl-kw">$1</span>');
+      html = html.replace(/(["'])(?:(?!\\1)[^\\\\]|\\\\.)*\\1/g, '<span class="hl-str">$&</span>');
+    } else if (lang === 'sql') {
+      html = html.replace(/--.*$/gm, '<span class="hl-cmt">$&</span>');
+      html = html.replace(/\\b(SELECT|FROM|WHERE|INSERT|INTO|UPDATE|SET|DELETE|CREATE|TABLE|INDEX|ALTER|DROP|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|NOT|NULL|DEFAULT|PRIMARY|KEY|REFERENCES|IF|EXISTS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|AS|VALUES|RETURNING|INTEGER|TEXT|REAL|BLOB)\\b/gi, '<span class="hl-kw">$&</span>');
+    }
+    return html;
   }
 
   function metricCard(label, value, sub) {
