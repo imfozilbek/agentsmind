@@ -88,6 +88,11 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     }
   });
 
+  // Metrics API (public)
+  app.get("/api/dashboard/metrics", (c) => {
+    return c.json(q.getMetricsSummary(db));
+  });
+
   // Dashboard HTML
   app.get("/", (c) => {
     return c.html(dashboardHTML());
@@ -143,6 +148,11 @@ function dashboardHTML() {
       <div id="commits" class="feed"></div>
     </section>
   </div>
+
+  <section class="panel metrics-panel">
+    <h2>Metrics</h2>
+    <div id="metrics"></div>
+  </section>
 
   <script>
     ${raw(JS)}
@@ -429,6 +439,107 @@ const CSS = `
     font-size: 13px;
   }
 
+  /* Metrics */
+  .metrics-panel {
+    margin-bottom: 24px;
+    max-height: none;
+  }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .metric-card {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 14px;
+  }
+
+  .metric-card .label {
+    color: var(--text-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .metric-card .value {
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric-card .sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  .agent-metrics-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .agent-metrics-table th {
+    text-align: left;
+    padding: 8px 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+
+  .agent-metrics-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-metrics-table tr:last-child td { border-bottom: none; }
+
+  .latency-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 40px;
+    margin-top: 12px;
+  }
+
+  .latency-bar .bar {
+    flex: 1;
+    background: var(--accent);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    opacity: 0.7;
+  }
+
+  .latency-bar .bar:hover { opacity: 1; }
+
+  .metrics-section-title {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 16px 0 8px;
+    font-weight: 600;
+  }
+
+  .latency-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  @media (max-width: 900px) {
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
   /* Commit detail modal */
   .modal-overlay {
     position: fixed;
@@ -615,10 +726,14 @@ const JS = `
 
   async function fetchData() {
     try {
-      const res = await fetch('/api/dashboard');
-      const data = await res.json();
+      const [dashRes, metricsRes] = await Promise.all([
+        fetch('/api/dashboard'),
+        fetch('/api/dashboard/metrics'),
+      ]);
+      const data = await dashRes.json();
+      const metrics = await metricsRes.json();
       lastData = data;
-      render(data);
+      render(data, metrics);
       document.getElementById('status-dot').classList.remove('error');
       document.getElementById('last-update').textContent = 'live — ' + new Date().toLocaleTimeString();
     } catch (e) {
@@ -627,12 +742,13 @@ const JS = `
     }
   }
 
-  function render(data) {
+  function render(data, metrics) {
     renderStats(data.stats);
     renderAgents(data.agents);
     renderTasks(data.tasks);
     renderPosts(data.posts);
     renderCommits(data.commits);
+    renderMetrics(metrics);
   }
 
   function renderStats(s) {
@@ -866,6 +982,76 @@ const JS = `
     } catch {
       content.innerHTML = '<div class="modal-loading">Failed to load file</div>';
     }
+  }
+
+  function renderMetrics(m) {
+    const el = document.getElementById('metrics');
+    if (!m || !m.aiCalls) { el.innerHTML = '<div class="empty">No metrics yet</div>'; return; }
+
+    const ai = m.aiCalls;
+    const ts = m.taskStats;
+    const avgLatency = ai.count > 0 ? Math.round(ai.total_latency / ai.count) : 0;
+    const tokPerSec = ai.count > 0 && ai.total_latency > 0 ? Math.round(ai.total_completion / (ai.total_latency / 1000)) : 0;
+
+    // Summary cards
+    let html = '<div class="metrics-grid">';
+    html += metricCard('AI Calls', ai.count, 'Total requests');
+    html += metricCard('Tokens', fmtNum(ai.total_tokens), fmtNum(ai.total_prompt) + ' prompt / ' + fmtNum(ai.total_completion) + ' completion');
+    html += metricCard('Avg Latency', avgLatency + 'ms', tokPerSec + ' tok/sec');
+    html += metricCard('Tasks', ts.completed + ' done / ' + ts.failed + ' failed', ts.avg_duration > 0 ? 'avg ' + fmtDuration(ts.avg_duration) : '');
+    html += '</div>';
+
+    // Agent breakdown table
+    if (m.agentStats && m.agentStats.length > 0) {
+      html += '<div class="metrics-section-title">Per Agent</div>';
+      html += '<table class="agent-metrics-table"><thead><tr>' +
+        '<th>Agent</th><th>AI Calls</th><th>Tokens</th><th>Tasks Done</th><th>Failed</th><th>Avg Task</th>' +
+        '</tr></thead><tbody>';
+      for (const a of m.agentStats) {
+        html += '<tr>' +
+          '<td>' + esc(a.agent_id) + '</td>' +
+          '<td>' + a.ai_calls + '</td>' +
+          '<td>' + fmtNum(a.tokens) + '</td>' +
+          '<td>' + a.tasks_done + '</td>' +
+          '<td>' + a.tasks_failed + '</td>' +
+          '<td>' + (a.avg_task_ms > 0 ? fmtDuration(a.avg_task_ms) : '-') + '</td>' +
+        '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+
+    // Latency sparkline
+    if (m.recentLatency && m.recentLatency.length > 1) {
+      const vals = m.recentLatency.map(r => r.latency || 0).reverse();
+      const max = Math.max(...vals, 1);
+      html += '<div class="metrics-section-title">Recent AI Latency</div>';
+      html += '<div class="latency-bar">';
+      for (const v of vals) {
+        const pct = Math.max((v / max) * 100, 3);
+        html += '<div class="bar" style="height:' + pct + '%" title="' + v + 'ms"></div>';
+      }
+      html += '</div>';
+      html += '<div class="latency-labels"><span>' + vals[0] + 'ms</span><span>' + vals[vals.length - 1] + 'ms</span></div>';
+    }
+
+    el.innerHTML = html;
+  }
+
+  function metricCard(label, value, sub) {
+    return '<div class="metric-card"><div class="label">' + label + '</div><div class="value">' + value + '</div>' +
+      (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+  }
+
+  function fmtNum(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function fmtDuration(ms) {
+    if (ms < 1000) return ms + 'ms';
+    if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+    return (ms / 60000).toFixed(1) + 'm';
   }
 
   function formatStatus(s) {
