@@ -10,6 +10,9 @@ Rules:
 - No over-engineering, no unnecessary abstractions
 - Include proper error handling
 - Use TypeScript strict mode conventions
+- When existing code is provided, BUILD ON IT — extend existing files rather than rewriting from scratch
+- If a file already exists, include the FULL updated file content (not just the diff)
+- Keep all existing functionality intact when adding new code
 - Return your response as a JSON object with this structure:
 
 {
@@ -72,20 +75,52 @@ export class CoderAgent extends BaseAgent {
     }
   }
 
-  private async implement(task: Task): Promise<void> {
+  private async buildContext(task: Task): Promise<string> {
     let context = "";
+
+    // Parent task context
     if (task.parent_id) {
       const parent = await this.get<Task>(`/tasks/${task.parent_id}`);
-      context = `\nParent task: ${parent.title}\nParent description: ${parent.description}`;
+      context += `\nParent task: ${parent.title}\nParent description: ${parent.description}`;
     }
 
+    // Sibling tasks — gather code from completed ones
     const siblings = task.parent_id
       ? await this.get<Task[]>(`/tasks/${task.parent_id}/subtasks`)
       : [];
-    const completed = siblings.filter(s => s.status === "done" && s.id !== task.id);
-    if (completed.length > 0) {
-      context += `\n\nAlready completed subtasks:\n${completed.map(s => `- ${s.title}`).join("\n")}`;
+
+    const done = siblings.filter(s => (s.status === "done" || s.status === "review") && s.id !== task.id);
+    if (done.length === 0) return context;
+
+    // Collect existing files from completed siblings
+    const existingFiles = new Map<string, string>();
+    for (const sibling of done) {
+      if (!sibling.output) continue;
+      try {
+        const parsed = JSON.parse(sibling.output) as CodeResponse;
+        for (const file of parsed.files) {
+          existingFiles.set(file.path, file.content);
+        }
+      } catch { /* skip unparseable output */ }
     }
+
+    if (existingFiles.size > 0) {
+      context += "\n\n--- EXISTING CODE (from completed subtasks) ---";
+      for (const [path, content] of existingFiles) {
+        context += `\n\nFile: ${path}\n\`\`\`typescript\n${content}\n\`\`\``;
+      }
+      context += "\n\n--- END EXISTING CODE ---";
+      context += "\nIMPORTANT: Build on the existing code above. Extend files, don't rewrite them.";
+    } else {
+      const titles = done.map(s => `- ${s.title}`).join("\n");
+      context += `\n\nAlready completed subtasks:\n${titles}`;
+    }
+
+    return context;
+  }
+
+  private async implement(task: Task): Promise<void> {
+    const context = await this.buildContext(task);
 
     const response = await this.chat([
       { role: "system", content: SYSTEM_PROMPT },
