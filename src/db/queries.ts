@@ -59,6 +59,32 @@ export interface Post {
   created_at: string;
 }
 
+export interface Memory {
+  id: number;
+  agent_id: string;
+  type: string;
+  content: string;
+  tags: string;
+  relevance: number;
+  created_at: string;
+}
+
+export interface CodeFile {
+  id: number;
+  commit_hash: string;
+  file_path: string;
+  content: string;
+  language: string;
+  created_at: string;
+}
+
+export interface CodeSearchResult {
+  file_path: string;
+  content: string;
+  commit_hash: string;
+  rank: number;
+}
+
 // ─── Agents ───
 
 export function createAgent(db: Database, id: string, apiKey: string, role = "coder"): Agent {
@@ -284,6 +310,94 @@ export function incrementRateLimit(db: Database, agentId: string, action: string
 export function cleanupRateLimits(db: Database): void {
   const cutoff = new Date(Date.now() - 7200_000).toISOString();
   db.query("DELETE FROM rate_limits WHERE window_start < ?").run(cutoff);
+}
+
+// ─── Memories ───
+
+export function saveMemory(db: Database, agentId: string, type: string, content: string, tags: string[] = []): Memory {
+  return db.query<Memory, [string, string, string, string]>(
+    "INSERT INTO memories (agent_id, type, content, tags) VALUES (?, ?, ?, ?) RETURNING *"
+  ).get(agentId, type, content, tags.join(","))!;
+}
+
+export function getMemories(db: Database, agentId: string, type?: string, limit = 20): Memory[] {
+  if (type) {
+    return db.query<Memory, [string, string, number]>(
+      "SELECT * FROM memories WHERE agent_id = ? AND type = ? ORDER BY relevance DESC, created_at DESC LIMIT ?"
+    ).all(agentId, type, limit);
+  }
+  return db.query<Memory, [string, number]>(
+    "SELECT * FROM memories WHERE agent_id = ? ORDER BY relevance DESC, created_at DESC LIMIT ?"
+  ).all(agentId, limit);
+}
+
+export function searchMemories(db: Database, query: string, agentId?: string, limit = 10): Memory[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
+  const params = words.map(w => `%${w}%`);
+
+  if (agentId) {
+    return db.query<Memory, (string | number)[]>(
+      `SELECT * FROM memories WHERE agent_id = ? AND ${conditions} ORDER BY relevance DESC LIMIT ?`
+    ).all(agentId, ...params, limit);
+  }
+  return db.query<Memory, (string | number)[]>(
+    `SELECT * FROM memories WHERE ${conditions} ORDER BY relevance DESC LIMIT ?`
+  ).all(...params, limit);
+}
+
+export function deleteMemory(db: Database, id: number): void {
+  db.query("DELETE FROM memories WHERE id = ?").run(id);
+}
+
+// ─── Code Index ───
+
+export function indexCode(db: Database, commitHash: string, filePath: string, content: string): void {
+  const ext = filePath.split(".").pop() ?? "";
+  const langMap: Record<string, string> = { ts: "typescript", js: "javascript", py: "python", rs: "rust", go: "go" };
+  const language = langMap[ext] ?? ext;
+
+  db.query(
+    "INSERT OR REPLACE INTO code_index (commit_hash, file_path, content, language) VALUES (?, ?, ?, ?)"
+  ).run(commitHash, filePath, content, language);
+}
+
+export function searchCode(db: Database, query: string, limit = 10): CodeSearchResult[] {
+  const words = query.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  // Use FTS5 for fast search
+  const ftsQuery = words.map(w => `"${w.replace(/"/g, '""')}"`).join(" AND ");
+
+  try {
+    return db.query<CodeSearchResult, [string, number]>(
+      `SELECT file_path, content, commit_hash, rank
+       FROM code_fts WHERE code_fts MATCH ?
+       ORDER BY rank LIMIT ?`
+    ).all(ftsQuery, limit);
+  } catch {
+    // Fallback to LIKE search if FTS fails
+    const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
+    const params = words.map(w => `%${w.toLowerCase()}%`);
+
+    return db.query<CodeSearchResult, (string | number)[]>(
+      `SELECT file_path, content, commit_hash, 0 as rank
+       FROM code_index WHERE ${conditions}
+       ORDER BY created_at DESC LIMIT ?`
+    ).all(...params, limit);
+  }
+}
+
+export function getLatestFiles(db: Database, limit = 50): CodeFile[] {
+  return db.query<CodeFile, [number]>(
+    `SELECT ci.* FROM code_index ci
+     INNER JOIN (
+       SELECT file_path, MAX(created_at) as max_time FROM code_index GROUP BY file_path
+     ) latest ON ci.file_path = latest.file_path AND ci.created_at = latest.max_time
+     ORDER BY ci.created_at DESC LIMIT ?`
+  ).all(limit);
 }
 
 // ─── Metrics ───

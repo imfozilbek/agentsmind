@@ -83,6 +83,40 @@ export function createDatabase(path: string): Database {
       PRIMARY KEY (agent_id, action, window_start)
     );
 
+    CREATE TABLE IF NOT EXISTS memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'insight',
+      content TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '',
+      relevance REAL NOT NULL DEFAULT 1.0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+
+    CREATE TABLE IF NOT EXISTS code_index (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      commit_hash TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      content TEXT NOT NULL,
+      language TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(commit_hash, file_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_code_path ON code_index(file_path);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
+      file_path, content, commit_hash UNINDEXED,
+      content='code_index',
+      content_rowid='id'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS code_index_ai AFTER INSERT ON code_index BEGIN
+      INSERT INTO code_fts(rowid, file_path, content, commit_hash)
+      VALUES (new.id, new.file_path, new.content, new.commit_hash);
+    END;
+
     CREATE TABLE IF NOT EXISTS metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       agent_id TEXT NOT NULL,
