@@ -150,6 +150,9 @@ function dashboardHTML() {
   <style>
     ${raw(CSS)}
   </style>
+  <script>
+    (function(){var t=localStorage.getItem('agentsmind-theme');if(t)document.documentElement.setAttribute('data-theme',t);})();
+  </script>
 </head>
 <body>
   <header>
@@ -157,6 +160,7 @@ function dashboardHTML() {
       <span class="logo-icon">◈</span> AgentsMind
     </div>
     <div class="header-meta">
+      <button id="theme-toggle" class="theme-btn" onclick="toggleTheme()" title="Toggle theme">◐</button>
       <span id="status-dot" class="dot"></span>
       <span id="last-update">connecting...</span>
     </div>
@@ -175,6 +179,21 @@ function dashboardHTML() {
         <h2>Tasks</h2>
         <button class="btn-new" onclick="openNewTaskForm()">+ New Task</button>
       </div>
+      <div class="filter-bar">
+        <input class="form-input filter-input" id="task-search" placeholder="Search tasks..." oninput="applyTaskFilter()" />
+        <select class="form-input filter-select" id="task-status-filter" onchange="applyTaskFilter()">
+          <option value="">All statuses</option>
+          <option value="todo">Todo</option>
+          <option value="planned">Planned</option>
+          <option value="in_progress">In Progress</option>
+          <option value="review">Review</option>
+          <option value="done">Done</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select class="form-input filter-select" id="task-agent-filter" onchange="applyTaskFilter()">
+          <option value="">All agents</option>
+        </select>
+      </div>
       <div class="task-board" id="tasks"></div>
     </section>
   </div>
@@ -183,11 +202,13 @@ function dashboardHTML() {
     <section class="panel">
       <h2>Activity</h2>
       <div id="posts" class="feed"></div>
+      <button class="btn-load-more" id="posts-load-more" onclick="loadMorePosts()" style="display:none">Load More</button>
     </section>
 
     <section class="panel">
       <h2>Commits</h2>
       <div id="commits" class="feed"></div>
+      <button class="btn-load-more" id="commits-load-more" onclick="loadMoreCommits()" style="display:none">Load More</button>
     </section>
   </div>
 
@@ -914,13 +935,82 @@ const CSS = `
     font-size: 13px;
   }
 
+  /* Light theme */
+  [data-theme="light"] {
+    --bg: #f4f4f8;
+    --surface: #ffffff;
+    --border: #e2e2ea;
+    --text: #1a1a2e;
+    --text-dim: #6b6b80;
+    --accent: #6c5ce7;
+    --accent-dim: #6c5ce715;
+    --green: #22c55e;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --orange: #f97316;
+  }
+
+  /* Theme toggle */
+  .theme-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-family: inherit;
+    line-height: 1;
+  }
+  .theme-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .filter-input { flex: 1; }
+  .filter-select { width: 150px; flex: none; }
+
+  /* Load more */
+  .btn-load-more {
+    width: 100%;
+    padding: 8px;
+    margin-top: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-load-more:hover { color: var(--accent); border-color: var(--accent); }
+
+  @media (max-width: 1200px) {
+    .task-board { grid-template-columns: repeat(3, 1fr); }
+  }
+
   @media (max-width: 900px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .grid { grid-template-columns: 1fr; }
     .grid:last-child { grid-template-columns: 1fr; }
-    .task-board { grid-template-columns: 1fr; }
+    .task-board { grid-template-columns: repeat(2, 1fr); }
     .modal-sidebar { display: none; }
     .modal { width: 95vw; }
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    .filter-bar { flex-wrap: wrap; }
+    .filter-select { width: 100%; }
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .stats { grid-template-columns: 1fr; }
+    .task-board { grid-template-columns: 1fr; }
+    .modal { width: 98vw; max-height: 90vh; }
+    .task-detail-grid { grid-template-columns: 1fr; }
   }
 `;
 
@@ -998,10 +1088,67 @@ const JS = `
     }
   }
 
+  // ─── Theme ───
+
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('agentsmind-theme', next);
+  }
+
+  // ─── Filtering ───
+
+  let filterDebounce = null;
+  function applyTaskFilter() {
+    clearTimeout(filterDebounce);
+    filterDebounce = setTimeout(function() {
+      if (lastData) renderTasks(lastData.tasks);
+    }, 200);
+  }
+
+  function getFilteredTasks(tasks) {
+    let filtered = tasks;
+    const search = (document.getElementById('task-search') || {}).value || '';
+    const statusF = (document.getElementById('task-status-filter') || {}).value || '';
+    const agentF = (document.getElementById('task-agent-filter') || {}).value || '';
+
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(function(t) {
+        return t.title.toLowerCase().includes(q) || (t.description && t.description.toLowerCase().includes(q));
+      });
+    }
+    if (statusF) filtered = filtered.filter(function(t) { return t.status === statusF; });
+    if (agentF) filtered = filtered.filter(function(t) { return t.assigned_to === agentF; });
+    return filtered;
+  }
+
+  // ─── Pagination ───
+
+  const PAGE_SIZE = 30;
+  let allPosts = [];
+  let allCommits = [];
+  let postsShown = PAGE_SIZE;
+  let commitsShown = PAGE_SIZE;
+
+  function loadMorePosts() {
+    postsShown += PAGE_SIZE;
+    renderPosts(allPosts);
+  }
+
+  function loadMoreCommits() {
+    commitsShown += PAGE_SIZE;
+    renderCommits(allCommits);
+  }
+
   function render(data, metrics) {
     renderStats(data.stats);
     renderAgents(data.agents);
+    populateAgentFilter(data.agents);
     renderTasks(data.tasks);
+    allPosts = data.posts;
+    allCommits = data.commits;
     renderPosts(data.posts);
     renderCommits(data.commits);
     renderMetrics(metrics);
@@ -1034,9 +1181,21 @@ const JS = `
     ).join('');
   }
 
+  function populateAgentFilter(agents) {
+    const sel = document.getElementById('task-agent-filter');
+    if (!sel) return;
+    const cur = sel.value;
+    var html = '<option value="">All agents</option>';
+    for (var i = 0; i < agents.length; i++) {
+      html += '<option value="' + esc(agents[i].id) + '"' + (agents[i].id === cur ? ' selected' : '') + '>' + esc(agents[i].id) + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
   function renderTasks(tasks) {
+    var filtered = getFilteredTasks(tasks);
     const columns = { todo: [], planned: [], in_progress: [], review: [], done: [] };
-    for (const t of tasks) {
+    for (const t of filtered) {
       const col = columns[t.status] || columns.todo;
       col.push(t);
     }
@@ -1061,7 +1220,8 @@ const JS = `
   function renderPosts(posts) {
     const el = document.getElementById('posts');
     if (!posts.length) { el.innerHTML = '<div class="empty">No activity yet</div>'; return; }
-    el.innerHTML = posts.slice(0, 50).map(p =>
+    var visible = posts.slice(0, postsShown);
+    el.innerHTML = visible.map(p =>
       '<div class="feed-item">' +
         '<div class="feed-header">' +
           '<span class="feed-agent">' + esc(p.agent_id) + '</span>' +
@@ -1071,12 +1231,15 @@ const JS = `
         '<div class="feed-content">' + esc(p.content) + '</div>' +
       '</div>'
     ).join('');
+    var btn = document.getElementById('posts-load-more');
+    if (btn) btn.style.display = posts.length > postsShown ? 'block' : 'none';
   }
 
   function renderCommits(commits) {
     const el = document.getElementById('commits');
     if (!commits.length) { el.innerHTML = '<div class="empty">No commits yet</div>'; return; }
-    el.innerHTML = commits.slice(0, 30).map(c =>
+    var visible = commits.slice(0, commitsShown);
+    el.innerHTML = visible.map(c =>
       '<div class="feed-item clickable" onclick="openCommit(\\'' + esc(c.hash) + '\\')">' +
         '<div class="feed-header">' +
           '<span class="commit-hash">' + esc(c.hash.slice(0, 8)) + '</span>' +
@@ -1088,6 +1251,8 @@ const JS = `
         '</div>' +
       '</div>'
     ).join('');
+    var btn = document.getElementById('commits-load-more');
+    if (btn) btn.style.display = commits.length > commitsShown ? 'block' : 'none';
   }
 
   // ─── Commit Detail Modal ───
