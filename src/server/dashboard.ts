@@ -28,7 +28,8 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     ).all(100);
 
     const dependencies = q.getDependencyMap(db);
-    return c.json({ stats, agents, tasks, commits, channels, posts, dependencies });
+    const reviews = q.listReviews(db, 50, 0);
+    return c.json({ stats, agents, tasks, commits, channels, posts, dependencies, reviews });
   });
 
   // Commit detail: info + file list
@@ -109,7 +110,8 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     const subtasks = q.getSubtasks(db, id);
     const dependencies = q.getDependencies(db, id);
     const dependents = q.getDependents(db, id);
-    return c.json({ ...task, subtasks, dependencies, dependents });
+    const reviewCount = q.getReviewCountForTask(db, id);
+    return c.json({ ...task, subtasks, dependencies, dependents, review_count: reviewCount });
   });
 
   app.patch("/api/dashboard/tasks/:id", async (c) => {
@@ -304,11 +306,16 @@ function dashboardHTML() {
     </section>
   </div>
 
-  <div class="grid">
+  <div class="grid three-col">
     <section class="panel">
       <h2>Activity</h2>
       <div id="posts" class="feed"></div>
       <button class="btn-load-more" id="posts-load-more" onclick="loadMorePosts()" style="display:none">Load More</button>
+    </section>
+
+    <section class="panel">
+      <h2>Reviews</h2>
+      <div id="reviews" class="feed"></div>
     </section>
 
     <section class="panel">
@@ -462,6 +469,10 @@ const CSS = `
     margin-bottom: 24px;
   }
 
+  .grid.three-col {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
   .grid:last-child {
     grid-template-columns: 1fr 1fr;
   }
@@ -572,6 +583,74 @@ const CSS = `
 
   .task-title { font-weight: 500; margin-bottom: 4px; }
   .task-meta { color: var(--text-dim); font-size: 11px; }
+
+  /* Review item */
+  .review-item {
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    border-left: 3px solid transparent;
+    margin-bottom: 4px;
+  }
+  .review-item:hover { background: var(--bg); }
+  .review-item.approved { border-left-color: var(--green); }
+  .review-item.changes_requested { border-left-color: var(--red); }
+  .review-item.pending { border-left-color: var(--yellow); }
+
+  .review-status {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .review-status.approved { background: rgba(74,222,128,0.15); color: var(--green); }
+  .review-status.changes_requested { background: rgba(248,113,113,0.15); color: var(--red); }
+  .review-status.pending { background: rgba(251,191,36,0.15); color: var(--yellow); }
+
+  .review-comment {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 4px;
+    white-space: pre-line;
+    max-height: 60px;
+    overflow: hidden;
+  }
+
+  /* Subtask progress */
+  .subtask-progress {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .progress-bar {
+    flex: 1;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--green);
+    transition: width 0.3s;
+  }
+
+  .review-round {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(251,191,36,0.15);
+    color: var(--yellow);
+    margin-top: 4px;
+    display: inline-block;
+  }
 
   .dep-badge {
     font-size: 10px;
@@ -1305,6 +1384,7 @@ const CSS = `
   @media (max-width: 900px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .grid { grid-template-columns: 1fr; }
+    .grid.three-col { grid-template-columns: 1fr; }
     .grid:last-child { grid-template-columns: 1fr; }
     .task-board { grid-template-columns: repeat(2, 1fr); }
     .modal-sidebar { display: none; }
@@ -1461,6 +1541,7 @@ const JS = `
     allPosts = data.posts;
     allCommits = data.commits;
     renderPosts(data.posts);
+    renderReviews(data.reviews);
     renderCommits(data.commits);
     renderMetrics(metrics);
     loadFileTree();
@@ -1508,19 +1589,43 @@ const JS = `
 
   function renderTasks(tasks) {
     var filtered = getFilteredTasks(tasks);
-    const columns = { todo: [], planned: [], in_progress: [], review: [], done: [] };
-    for (const t of filtered) {
-      const col = columns[t.status] || columns.todo;
-      col.push(t);
+    var depMap = (lastData && lastData.dependencies) || [];
+
+    // Build subtask map: parent_id -> [subtasks]
+    var subtaskMap = {};
+    var parentTasks = [];
+    for (var i = 0; i < filtered.length; i++) {
+      var t = filtered[i];
+      if (t.parent_id) {
+        if (!subtaskMap[t.parent_id]) subtaskMap[t.parent_id] = [];
+        subtaskMap[t.parent_id].push(t);
+      } else {
+        parentTasks.push(t);
+      }
     }
 
-    var depMap = (lastData && lastData.dependencies) || [];
+    // Compute effective status for parents based on subtasks
+    function getParentStatus(p) {
+      var subs = subtaskMap[p.id] || [];
+      if (subs.length === 0) return p.status;
+      // If parent has explicit status, use it unless it's still "todo" with active subtasks
+      return p.status;
+    }
+
+    const columns = { todo: [], planned: [], in_progress: [], review: [], done: [] };
+    for (var i = 0; i < parentTasks.length; i++) {
+      var t = parentTasks[i];
+      var st = getParentStatus(t);
+      var col = columns[st] || columns.todo;
+      col.push(t);
+    }
 
     const el = document.getElementById('tasks');
     el.innerHTML = Object.entries(columns).map(([status, items]) =>
       '<div class="task-column">' +
         '<h3>' + formatStatus(status) + ' <span class="count">' + items.length + '</span></h3>' +
         (items.length === 0 ? '' : items.map(t => {
+          var subs = subtaskMap[t.id] || [];
           var taskDeps = depMap.filter(function(d) { return d.task_id === t.id; });
           var blockedCount = taskDeps.filter(function(d) { return d.dep_status !== 'done'; }).length;
           var depBadge = blockedCount > 0
@@ -1528,12 +1633,26 @@ const JS = `
             : taskDeps.length > 0
             ? '<div class="dep-badge clear">deps ok</div>'
             : '';
+
+          // Subtask progress bar
+          var progressHTML = '';
+          if (subs.length > 0) {
+            var doneCount = subs.filter(function(s) { return s.status === 'done'; }).length;
+            var failedCount = subs.filter(function(s) { return s.status === 'failed'; }).length;
+            var pct = Math.round((doneCount / subs.length) * 100);
+            progressHTML = '<div class="subtask-progress">' +
+              '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +
+              '<span>' + doneCount + '/' + subs.length + (failedCount > 0 ? ' (' + failedCount + ' failed)' : '') + '</span>' +
+            '</div>';
+          }
+
           return '<div class="task-card clickable ' + esc(t.status) + '" onclick="openTask(' + t.id + ')">' +
             '<div class="task-title">#' + t.id + ' ' + esc(t.title) + '</div>' +
             '<div class="task-meta">' +
               (t.assigned_to ? esc(t.assigned_to) : 'unassigned') +
-              (t.parent_id ? ' · subtask' : '') +
+              (subs.length > 0 ? ' · ' + subs.length + ' subtasks' : '') +
             '</div>' +
+            progressHTML +
             depBadge +
           '</div>';
         }).join('')) +
@@ -1577,6 +1696,27 @@ const JS = `
     ).join('');
     var btn = document.getElementById('commits-load-more');
     if (btn) btn.style.display = commits.length > commitsShown ? 'block' : 'none';
+  }
+
+  function renderReviews(reviews) {
+    var el = document.getElementById('reviews');
+    if (!reviews || !reviews.length) { el.innerHTML = '<div class="empty">No reviews yet</div>'; return; }
+    el.innerHTML = reviews.slice(0, 30).map(function(r) {
+      var statusLabel = r.status === 'changes_requested' ? 'changes requested' : r.status;
+      return '<div class="review-item ' + esc(r.status) + '">' +
+        '<div class="feed-header">' +
+          '<span><span class="review-status ' + esc(r.status) + '">' + esc(statusLabel) + '</span>' +
+            (r.task_title ? ' <span style="font-size:11px;color:var(--text-dim)">on #' + r.task_id + ' ' + esc(r.task_title) + '</span>' : '') +
+          '</span>' +
+          '<span class="feed-time">' + timeAgo(r.created_at) + '</span>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">' +
+          'by ' + esc(r.reviewer_id) +
+          (r.commit_hash ? ' · <span class="commit-hash" style="cursor:pointer" onclick="openCommit(\\'' + esc(r.commit_hash) + '\\')">' + esc(r.commit_hash.slice(0, 8)) + '</span>' : '') +
+        '</div>' +
+        (r.comment ? '<div class="review-comment">' + esc(r.comment) + '</div>' : '') +
+      '</div>';
+    }).join('');
   }
 
   // ─── Commit Detail Modal ───
@@ -1880,7 +2020,7 @@ const JS = `
           '</div>' +
           subtasksHTML +
           depsHTML + dependentsHTML + addDepHTML +
-          (task.output ? '<div class="detail-field"><div class="label">Output</div><div class="file-view" style="max-height:200px;overflow:auto">' + esc(task.output.slice(0, 2000)) + '</div></div>' : '') +
+          renderTaskOutput(task.output) +
         '</div>' +
         '<div class="task-detail-sidebar">' +
           '<div class="detail-field">' +
@@ -1899,6 +2039,7 @@ const JS = `
             '<div class="label">Created</div>' +
             '<div class="value">' + esc(task.created_at) + '</div>' +
           '</div>' +
+          (task.review_count > 0 ? '<div class="detail-field"><div class="label">Review Rounds</div><div class="value"><span class="review-round">' + task.review_count + '/3</span></div></div>' : '') +
           (task.commit_hash ? '<div class="detail-field"><div class="label">Commit</div><div class="value"><span class="commit-hash" style="cursor:pointer" onclick="closeModal();openCommit(\\'' + esc(task.commit_hash) + '\\')">' + esc(task.commit_hash.slice(0,8)) + '</span></div></div>' : '') +
           '<div class="form-actions" style="margin-top:auto">' +
             '<button class="btn btn-danger" onclick="deleteTask(' + task.id + ')">Delete</button>' +
@@ -1945,6 +2086,35 @@ const JS = `
     await fetch('/api/dashboard/tasks/' + id, { method: 'DELETE' });
     closeModal();
     fetchData();
+  }
+
+  function renderTaskOutput(output) {
+    if (!output) return '';
+    try {
+      var parsed = JSON.parse(output);
+      if (parsed.files && Array.isArray(parsed.files)) {
+        var html = '<div class="detail-field"><div class="label">Generated Files</div>';
+        for (var i = 0; i < parsed.files.length; i++) {
+          var f = parsed.files[i];
+          html += '<div style="margin-top:8px"><div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:4px">' + esc(f.path) + '</div>';
+          var lines = f.content.split('\\n');
+          var preview = lines.slice(0, 20);
+          html += '<div class="file-view" style="max-height:200px;overflow:auto;font-size:11px">';
+          for (var j = 0; j < preview.length; j++) {
+            html += '<div class="fv-line"><div class="fv-num">' + (j+1) + '</div><div class="fv-code">' + esc(preview[j]) + '</div></div>';
+          }
+          if (lines.length > 20) html += '<div style="color:var(--text-dim);padding:4px 12px;font-size:10px">... ' + (lines.length - 20) + ' more lines</div>';
+          html += '</div></div>';
+        }
+        if (parsed.commit_message) {
+          html += '<div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Commit: ' + esc(parsed.commit_message) + '</div>';
+        }
+        html += '</div>';
+        return html;
+      }
+    } catch {}
+    // Fallback: raw output
+    return '<div class="detail-field"><div class="label">Output</div><div class="file-view" style="max-height:200px;overflow:auto">' + esc(output.slice(0, 2000)) + '</div></div>';
   }
 
   function renderMetrics(m) {
