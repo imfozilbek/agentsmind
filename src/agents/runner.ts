@@ -64,10 +64,10 @@ export class AgentRunner {
     await Promise.all(this.agents.map(a => a.start()));
   }
 
-  stop(): void {
-    for (const agent of this.agents) {
-      agent.stop();
-    }
+  async stop(): Promise<void> {
+    console.log(`Stopping ${this.agents.length} agents gracefully...`);
+    await Promise.all(this.agents.map(a => a.stop()));
+    console.log("All agents stopped.");
   }
 
   private async register(id: string, role: string): Promise<string> {

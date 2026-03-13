@@ -26,9 +26,12 @@ const runner = new AgentRunner({
 });
 
 // Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("\nShutting down agents...");
-  runner.stop();
+let shuttingDown = false;
+process.on("SIGINT", async () => {
+  if (shuttingDown) { process.exit(1); }
+  shuttingDown = true;
+  console.log("\nGraceful shutdown — waiting for active tasks to finish...");
+  await runner.stop();
   process.exit(0);
 });
 
