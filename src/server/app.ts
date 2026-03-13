@@ -9,6 +9,7 @@ import { commitRoutes } from "./commits.ts";
 import { reviewRoutes } from "./reviews.ts";
 import { channelRoutes } from "./channels.ts";
 import { agentRoutes } from "./agents.ts";
+import { dashboardRoutes } from "./dashboard.ts";
 import { getStats } from "../db/queries.ts";
 
 export interface ServerConfig {
@@ -30,6 +31,9 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
 
   // Agent registration (public)
   app.route("/api/agents", agentRoutes(db));
+
+  // Dashboard (public)
+  app.route("/", dashboardRoutes(db));
 
   // Admin
   const admin = new Hono();
