@@ -27,7 +27,8 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
        ORDER BY p.created_at DESC LIMIT ?`
     ).all(100);
 
-    return c.json({ stats, agents, tasks, commits, channels, posts });
+    const dependencies = q.getDependencyMap(db);
+    return c.json({ stats, agents, tasks, commits, channels, posts, dependencies });
   });
 
   // Commit detail: info + file list
@@ -106,7 +107,9 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Not found" }, 404);
     const subtasks = q.getSubtasks(db, id);
-    return c.json({ ...task, subtasks });
+    const dependencies = q.getDependencies(db, id);
+    const dependents = q.getDependents(db, id);
+    return c.json({ ...task, subtasks, dependencies, dependents });
   });
 
   app.patch("/api/dashboard/tasks/:id", async (c) => {
@@ -116,6 +119,31 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     if (!task) return c.json({ error: "Not found" }, 404);
     broadcast({ type: "task_updated", data: task });
     return c.json(task);
+  });
+
+  // Task dependency management
+  app.post("/api/dashboard/tasks/:id/dependencies", async (c) => {
+    const id = Number(c.req.param("id"));
+    const task = q.getTask(db, id);
+    if (!task) return c.json({ error: "Not found" }, 404);
+    const { depends_on_id } = await c.req.json<{ depends_on_id: number }>();
+    const dep = q.getTask(db, depends_on_id);
+    if (!dep) return c.json({ error: "Dependency task not found" }, 404);
+    try {
+      q.addDependency(db, id, depends_on_id);
+      broadcast({ type: "task_updated", data: task });
+      return c.json({ ok: true });
+    } catch (e: unknown) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
+  });
+
+  app.delete("/api/dashboard/tasks/:id/dependencies/:depId", (c) => {
+    const id = Number(c.req.param("id"));
+    const depId = Number(c.req.param("depId"));
+    q.removeDependency(db, id, depId);
+    broadcast({ type: "task_updated", data: { id } });
+    return c.json({ ok: true });
   });
 
   app.delete("/api/dashboard/tasks/:id", (c) => {
@@ -445,6 +473,16 @@ const CSS = `
 
   .task-title { font-weight: 500; margin-bottom: 4px; }
   .task-meta { color: var(--text-dim); font-size: 11px; }
+
+  .dep-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-top: 4px;
+    display: inline-block;
+  }
+  .dep-badge.blocked { background: rgba(248,113,113,0.15); color: var(--red); }
+  .dep-badge.clear { background: rgba(74,222,128,0.15); color: var(--green); }
 
   /* Feed */
   .feed { display: flex; flex-direction: column; gap: 2px; }
@@ -1200,19 +1238,29 @@ const JS = `
       col.push(t);
     }
 
+    var depMap = (lastData && lastData.dependencies) || [];
+
     const el = document.getElementById('tasks');
     el.innerHTML = Object.entries(columns).map(([status, items]) =>
       '<div class="task-column">' +
         '<h3>' + formatStatus(status) + ' <span class="count">' + items.length + '</span></h3>' +
-        (items.length === 0 ? '' : items.map(t =>
-          '<div class="task-card clickable ' + esc(t.status) + '" onclick="openTask(' + t.id + ')">' +
+        (items.length === 0 ? '' : items.map(t => {
+          var taskDeps = depMap.filter(function(d) { return d.task_id === t.id; });
+          var blockedCount = taskDeps.filter(function(d) { return d.dep_status !== 'done'; }).length;
+          var depBadge = blockedCount > 0
+            ? '<div class="dep-badge blocked">' + blockedCount + ' blocked</div>'
+            : taskDeps.length > 0
+            ? '<div class="dep-badge clear">deps ok</div>'
+            : '';
+          return '<div class="task-card clickable ' + esc(t.status) + '" onclick="openTask(' + t.id + ')">' +
             '<div class="task-title">#' + t.id + ' ' + esc(t.title) + '</div>' +
             '<div class="task-meta">' +
               (t.assigned_to ? esc(t.assigned_to) : 'unassigned') +
               (t.parent_id ? ' · subtask' : '') +
             '</div>' +
-          '</div>'
-        ).join('')) +
+            depBadge +
+          '</div>';
+        }).join('')) +
       '</div>'
     ).join('');
   }
@@ -1509,6 +1557,44 @@ const JS = `
         '</div>'
       : '';
 
+    const depsHTML = task.dependencies && task.dependencies.length > 0
+      ? '<div class="detail-field">' +
+          '<div class="label">Depends On</div>' +
+          '<div class="subtask-list">' +
+            task.dependencies.map(d =>
+              '<div class="subtask-item">' +
+                '<span class="status-badge ' + esc(d.status) + '">' + esc(d.status.replace(/_/g, ' ')) + '</span>' +
+                '<span style="cursor:pointer" onclick="openTask(' + d.id + ')">#' + d.id + ' ' + esc(d.title) + '</span>' +
+                '<button class="btn btn-secondary" style="margin-left:auto;padding:2px 8px;font-size:10px" onclick="removeDep(' + task.id + ',' + d.id + ')">x</button>' +
+              '</div>'
+            ).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
+    const dependentsHTML = task.dependents && task.dependents.length > 0
+      ? '<div class="detail-field">' +
+          '<div class="label">Depended By</div>' +
+          '<div class="subtask-list">' +
+            task.dependents.map(d =>
+              '<div class="subtask-item">' +
+                '<span class="status-badge ' + esc(d.status) + '">' + esc(d.status.replace(/_/g, ' ')) + '</span>' +
+                '<span style="cursor:pointer" onclick="openTask(' + d.id + ')">#' + d.id + ' ' + esc(d.title) + '</span>' +
+              '</div>'
+            ).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
+    const addDepHTML =
+      '<div class="detail-field">' +
+        '<div class="label">Add Dependency</div>' +
+        '<div style="display:flex;gap:6px">' +
+          '<input class="form-input" id="add-dep-input" placeholder="Task ID" style="width:100px" />' +
+          '<button class="btn btn-secondary" onclick="addDep(' + task.id + ')">Add</button>' +
+        '</div>' +
+      '</div>';
+
     const body =
       '<div class="task-detail-grid">' +
         '<div class="task-detail-main">' +
@@ -1517,6 +1603,7 @@ const JS = `
             '<div class="value">' + (esc(task.description) || '<span style="color:var(--text-dim)">No description</span>') + '</div>' +
           '</div>' +
           subtasksHTML +
+          depsHTML + dependentsHTML + addDepHTML +
           (task.output ? '<div class="detail-field"><div class="label">Output</div><div class="file-view" style="max-height:200px;overflow:auto">' + esc(task.output.slice(0, 2000)) + '</div></div>' : '') +
         '</div>' +
         '<div class="task-detail-sidebar">' +
@@ -1552,6 +1639,28 @@ const JS = `
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
     });
+    fetchData();
+  }
+
+  async function addDep(taskId) {
+    var input = document.getElementById('add-dep-input');
+    var depId = Number(input.value);
+    if (!depId) { input.focus(); return; }
+    try {
+      var res = await fetch('/api/dashboard/tasks/' + taskId + '/dependencies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ depends_on_id: depId }),
+      });
+      if (!res.ok) { var err = await res.json(); alert(err.error || 'Failed'); return; }
+      openTask(taskId);
+      fetchData();
+    } catch { alert('Failed to add dependency'); }
+  }
+
+  async function removeDep(taskId, depId) {
+    await fetch('/api/dashboard/tasks/' + taskId + '/dependencies/' + depId, { method: 'DELETE' });
+    openTask(taskId);
     fetchData();
   }
 
