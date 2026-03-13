@@ -345,6 +345,29 @@ export function getReviewsForCommit(db: Database, commitHash: string): Review[] 
   ).all(commitHash);
 }
 
+export interface ReviewWithContext extends Review {
+  task_id: number | null;
+  task_title: string | null;
+  agent_id: string | null;
+}
+
+export function listReviews(db: Database, limit = 50, offset = 0): ReviewWithContext[] {
+  return db.query<ReviewWithContext, [number, number]>(
+    `SELECT r.*, c.task_id, t.title as task_title, c.agent_id
+     FROM reviews r
+     LEFT JOIN commits c ON c.hash = r.commit_hash
+     LEFT JOIN tasks t ON t.id = c.task_id
+     ORDER BY r.created_at DESC LIMIT ? OFFSET ?`
+  ).all(limit, offset);
+}
+
+export function getReviewCountForTask(db: Database, taskId: number): number {
+  const row = db.query<{ count: number }, [number]>(
+    `SELECT COUNT(*) as count FROM task_status_log WHERE task_id = ? AND status = 'review'`
+  ).get(taskId);
+  return row?.count ?? 0;
+}
+
 // ─── Channels ───
 
 export function createChannel(db: Database, name: string, description = ""): Channel {
