@@ -10,7 +10,8 @@ import { reviewRoutes } from "./reviews.ts";
 import { channelRoutes } from "./channels.ts";
 import { agentRoutes } from "./agents.ts";
 import { dashboardRoutes } from "./dashboard.ts";
-import { getStats } from "../db/queries.ts";
+import { getStats, recordMetric } from "../db/queries.ts";
+import type { Env } from "./types.ts";
 
 export interface ServerConfig {
   adminKey: string;
@@ -55,6 +56,18 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   authed.route("/commits", commitRoutes(db, git, config.maxBundleSize, config.maxPushesPerHour));
   authed.route("/reviews", reviewRoutes(db));
   authed.route("/channels", channelRoutes(db, config.maxPostsPerHour));
+
+  // Metrics ingestion (authenticated)
+  const metricsApp = new Hono<Env>();
+  metricsApp.post("/", async (c) => {
+    const agent = c.get("agent");
+    const { event, value, meta } = await c.req.json<{ event: string; value: number; meta?: Record<string, unknown> }>();
+    if (!event) return c.json({ error: "event required" }, 400);
+    recordMetric(db, agent.id, event, value ?? 0, meta ?? {});
+    return c.json({ ok: true });
+  });
+  authed.route("/metrics", metricsApp);
+
   app.route("/api", authed);
 
   return app;
