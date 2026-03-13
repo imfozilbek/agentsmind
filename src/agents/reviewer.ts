@@ -74,6 +74,11 @@ export class ReviewerAgent extends BaseAgent {
     } else {
       await this.api("PATCH", `/tasks/${task.id}`, { status: "in_progress" });
       await this.post("general", `Changes requested on task #${task.id}: ${result.comment}`);
+      await this.remember(
+        `Review issue on "${task.title}": ${result.comment}`,
+        "review_issue",
+        ["review"],
+      );
     }
 
     console.log(`[${this.config.id}] Review for task #${task.id}: ${result.status}`);

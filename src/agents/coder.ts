@@ -93,7 +93,6 @@ export class CoderAgent extends BaseAgent {
       : [];
 
     const done = siblings.filter(s => (s.status === "done" || s.status === "review") && s.id !== task.id);
-    if (done.length === 0) return context;
 
     // Collect existing files from completed siblings
     const existingFiles = new Map<string, string>();
@@ -114,9 +113,35 @@ export class CoderAgent extends BaseAgent {
       }
       context += "\n\n--- END EXISTING CODE ---";
       context += "\nIMPORTANT: Build on the existing code above. Extend files, don't rewrite them.";
-    } else {
+    } else if (done.length > 0) {
       const titles = done.map(s => `- ${s.title}`).join("\n");
       context += `\n\nAlready completed subtasks:\n${titles}`;
+    }
+
+    // RAG — search codebase for relevant code
+    const keywords = `${task.title} ${task.description}`.slice(0, 200);
+    const searchResults = await this.searchCode(keywords);
+    if (searchResults.length > 0) {
+      const seen = new Set(existingFiles.keys());
+      const relevant = searchResults.filter(r => !seen.has(r.file_path));
+      if (relevant.length > 0) {
+        context += "\n\n--- RELEVANT CODE (from codebase search) ---";
+        for (const r of relevant.slice(0, 3)) {
+          const truncated = r.content.length > 2000 ? r.content.slice(0, 2000) + "\n// ...truncated" : r.content;
+          context += `\n\nFile: ${r.file_path}\n\`\`\`\n${truncated}\n\`\`\``;
+        }
+        context += "\n\n--- END RELEVANT CODE ---";
+      }
+    }
+
+    // Memory — recall relevant insights
+    const memories = await this.recallRelevant(task.title);
+    if (memories.length > 0) {
+      context += "\n\n--- AGENT MEMORY (lessons from past tasks) ---";
+      for (const m of memories.slice(0, 5)) {
+        context += `\n- [${m.type}] ${m.content}`;
+      }
+      context += "\n\n--- END MEMORY ---";
     }
 
     return context;
@@ -180,6 +205,11 @@ export class CoderAgent extends BaseAgent {
       if (await f.exists()) { try { await Bun.file(bundlePath).unlink?.(); } catch { /* ignore */ } }
     }
 
+    // Index files for RAG
+    for (const file of result.files) {
+      await this.indexFile(hash, file.path, file.content);
+    }
+
     // Save output + commit hash to task, mark for review
     const output = JSON.stringify(result, null, 2);
     await this.api("PATCH", `/tasks/${task.id}`, {
@@ -187,6 +217,13 @@ export class CoderAgent extends BaseAgent {
       output,
       commit_hash: hash,
     });
+
+    // Save memory about what was done
+    await this.remember(
+      `Task "${task.title}": implemented ${result.files.map(f => f.path).join(", ")}. ${result.commit_message}`,
+      "task_completed",
+      [task.title.split(" ")[0]!.toLowerCase()],
+    );
 
     await this.post(
       "general",
