@@ -2,6 +2,10 @@ export interface AIConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /** Max concurrent API requests across all agents (default: 2) */
+  maxConcurrency?: number;
+  /** Min milliseconds between requests (default: 1000) */
+  minIntervalMs?: number;
 }
 
 export interface ChatMessage {
@@ -21,15 +25,73 @@ export interface FIMRequest {
 }
 
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 2000;
 
 export type MetricsCallback = (event: string, value: number, meta: Record<string, unknown>) => void;
 
+// ─── Global Rate Limiter (shared across all AIClient instances) ───
+
+class RateLimiter {
+  private queue: (() => void)[] = [];
+  private active = 0;
+  private lastRequestTime = 0;
+
+  constructor(
+    private maxConcurrency: number,
+    private minIntervalMs: number,
+  ) {}
+
+  async acquire(): Promise<void> {
+    // Wait for a slot to open
+    while (this.active >= this.maxConcurrency) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.active++;
+
+    // Enforce minimum interval between requests
+    const now = Date.now();
+    const elapsed = now - this.lastRequestTime;
+    if (elapsed < this.minIntervalMs) {
+      await Bun.sleep(this.minIntervalMs - elapsed);
+    }
+    this.lastRequestTime = Date.now();
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  get running(): number {
+    return this.active;
+  }
+}
+
+let globalLimiter: RateLimiter | null = null;
+
+function getLimiter(config: AIConfig): RateLimiter {
+  if (!globalLimiter) {
+    globalLimiter = new RateLimiter(
+      config.maxConcurrency ?? 2,
+      config.minIntervalMs ?? 1000,
+    );
+  }
+  return globalLimiter;
+}
+
 export class AIClient {
   private onMetric: MetricsCallback | null = null;
+  private limiter: RateLimiter;
 
-  constructor(private config: AIConfig) {}
+  constructor(private config: AIConfig) {
+    this.limiter = getLimiter(config);
+  }
 
   setMetricsCallback(cb: MetricsCallback): void {
     this.onMetric = cb;
@@ -39,6 +101,7 @@ export class AIClient {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      await this.limiter.acquire();
       try {
         const res = await fetch(url, init);
 
@@ -47,8 +110,10 @@ export class AIClient {
         const body = await res.text();
 
         if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-          console.warn(`[AI] ${res.status} on attempt ${attempt + 1}, retrying in ${delay}ms...`);
+          // On 429, use longer backoff
+          const base = res.status === 429 ? BASE_DELAY_MS * 2 : BASE_DELAY_MS;
+          const delay = base * Math.pow(2, attempt);
+          console.warn(`[AI] ${res.status} on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms... (queue: ${this.limiter.pending})`);
           await Bun.sleep(delay);
           lastError = new Error(`AI API error (${res.status}): ${body}`);
           continue;
@@ -61,13 +126,15 @@ export class AIClient {
         // Network error — retry
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-          console.warn(`[AI] Network error on attempt ${attempt + 1}, retrying in ${delay}ms...`);
+          console.warn(`[AI] Network error on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms...`);
           await Bun.sleep(delay);
           lastError = err as Error;
           continue;
         }
 
         throw err;
+      } finally {
+        this.limiter.release();
       }
     }
 
