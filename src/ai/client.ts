@@ -24,8 +24,16 @@ const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
+export type MetricsCallback = (event: string, value: number, meta: Record<string, unknown>) => void;
+
 export class AIClient {
+  private onMetric: MetricsCallback | null = null;
+
   constructor(private config: AIConfig) {}
+
+  setMetricsCallback(cb: MetricsCallback): void {
+    this.onMetric = cb;
+  }
 
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
     let lastError: Error | null = null;
@@ -67,6 +75,8 @@ export class AIClient {
   }
 
   async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<ChatResponse> {
+    const start = performance.now();
+
     const res = await this.fetchWithRetry(`${this.config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -81,10 +91,19 @@ export class AIClient {
       }),
     });
 
+    const latency = Math.round(performance.now() - start);
+
     const data = await res.json() as {
       choices: { message: { content: string } }[];
       usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     };
+
+    this.onMetric?.("ai_chat", data.usage.total_tokens, {
+      prompt_tokens: data.usage.prompt_tokens,
+      completion_tokens: data.usage.completion_tokens,
+      latency_ms: latency,
+      model: this.config.model,
+    });
 
     return {
       content: data.choices[0]!.message.content,
