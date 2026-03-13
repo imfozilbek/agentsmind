@@ -17,6 +17,9 @@ export abstract class BaseAgent {
 
   constructor(protected config: AgentConfig) {
     this.ai = new AIClient(config.ai);
+    this.ai.setMetricsCallback((event, value, meta) => {
+      this.reportMetric(event, value, meta).catch(() => {});
+    });
   }
 
   abstract get role(): string;
@@ -118,6 +121,26 @@ export abstract class BaseAgent {
   protected async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<string> {
     const response = await this.ai.chat(messages, options);
     return response.content;
+  }
+
+  // ─── Metrics ───
+
+  protected async reportMetric(event: string, value: number, meta: Record<string, unknown> = {}): Promise<void> {
+    try {
+      await this.api("POST", "/metrics", { event, value, meta });
+    } catch { /* metrics are best-effort */ }
+  }
+
+  protected trackTask(taskId: number): () => Promise<void> {
+    const start = performance.now();
+    return async () => {
+      const duration = Math.round(performance.now() - start);
+      await this.reportMetric("task_done", duration, { task_id: taskId });
+    };
+  }
+
+  protected async reportTaskFailed(taskId: number, error: string): Promise<void> {
+    await this.reportMetric("task_failed", 0, { task_id: taskId, error });
   }
 
   protected async pushBundle(bundlePath: string): Promise<{ indexed: string[] }> {

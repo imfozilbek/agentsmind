@@ -66,10 +66,13 @@ export class CoderAgent extends BaseAgent {
     console.log(`[${this.config.id}] Working on: "${task.title}"`);
     await this.post("general", `Taking task #${task.id}: "${task.title}"`);
 
+    const done = this.trackTask(task.id);
     try {
       await this.implement(task);
+      await done();
     } catch (err) {
       console.error(`[${this.config.id}] Failed task #${task.id}:`, err);
+      await this.reportTaskFailed(task.id, String(err));
       await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
       await this.post("general", `Failed task #${task.id}: ${err}`);
     }
