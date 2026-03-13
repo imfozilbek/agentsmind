@@ -143,6 +143,41 @@ export abstract class BaseAgent {
     await this.reportMetric("task_failed", 0, { task_id: taskId, error });
   }
 
+  // ─── Memory ───
+
+  protected async remember(content: string, type = "insight", tags: string[] = []): Promise<void> {
+    try {
+      await this.api("POST", "/memories", { type, content, tags });
+    } catch { /* best-effort */ }
+  }
+
+  protected async recall(type?: string, limit = 10): Promise<{ content: string; type: string }[]> {
+    try {
+      const path = type ? `/memories?type=${type}&limit=${limit}` : `/memories?limit=${limit}`;
+      return await this.get(path);
+    } catch { return []; }
+  }
+
+  protected async recallRelevant(query: string): Promise<{ content: string; type: string }[]> {
+    try {
+      return await this.get(`/memories/search?q=${encodeURIComponent(query)}`);
+    } catch { return []; }
+  }
+
+  // ─── Code Search ───
+
+  protected async searchCode(query: string, limit = 5): Promise<{ file_path: string; content: string }[]> {
+    try {
+      return await this.get(`/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    } catch { return []; }
+  }
+
+  protected async indexFile(commitHash: string, filePath: string, content: string): Promise<void> {
+    try {
+      await this.api("POST", "/search/index", { commit_hash: commitHash, file_path: filePath, content });
+    } catch { /* best-effort */ }
+  }
+
   protected async pushBundle(bundlePath: string): Promise<{ indexed: string[] }> {
     const file = Bun.file(bundlePath);
     const body = await file.arrayBuffer();
