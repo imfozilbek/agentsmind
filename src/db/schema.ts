@@ -27,6 +27,7 @@ export function createDatabase(path: string): Database {
       assigned_to TEXT REFERENCES agents(id),
       created_by TEXT,
       commit_hash TEXT,
+      output TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );

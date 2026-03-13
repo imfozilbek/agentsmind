@@ -38,11 +38,16 @@ export class ReviewerAgent extends BaseAgent {
   }
 
   private async review(task: Task): Promise<void> {
+    if (!task.output) {
+      console.log(`[${this.config.id}] Task #${task.id} has no output, skipping`);
+      return;
+    }
+
     const response = await this.chat([
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content: `Review this task implementation:\n\nTask: ${task.title}\nDescription: ${task.description}\nAssigned to: ${task.assigned_to}\nCommit: ${task.commit_hash ?? "pending"}`,
+        content: `Review this task implementation:\n\nTask: ${task.title}\nDescription: ${task.description}\nAssigned to: ${task.assigned_to}\n\nGenerated code:\n${task.output}`,
       },
     ], { temperature: 0.1 });
 

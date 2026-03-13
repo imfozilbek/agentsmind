@@ -88,8 +88,9 @@ export class CoderAgent extends BaseAgent {
 
     console.log(`[${this.config.id}] Generated ${result.files.length} files for task #${task.id}`);
 
-    // Mark task as ready for review
-    await this.api("PATCH", `/tasks/${task.id}`, { status: "review" });
+    // Save generated code to task output and mark for review
+    const output = JSON.stringify(result, null, 2);
+    await this.api("PATCH", `/tasks/${task.id}`, { status: "review", output });
     await this.post(
       "general",
       `Completed task #${task.id}: "${task.title}" → ${result.files.length} files. Ready for review.`,

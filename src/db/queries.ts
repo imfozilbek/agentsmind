@@ -20,6 +20,7 @@ export interface Task {
   assigned_to: string | null;
   created_by: string | null;
   commit_hash: string | null;
+  output: string;
   created_at: string;
   updated_at: string;
 }
@@ -123,7 +124,7 @@ export function listTasks(db: Database, status?: string, agentId?: string, limit
   ).all(limit, offset);
 }
 
-export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, "status" | "assigned_to" | "commit_hash" | "title" | "description" | "priority">>): Task | null {
+export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, "status" | "assigned_to" | "commit_hash" | "output" | "title" | "description" | "priority">>): Task | null {
   const sets: string[] = [];
   const values: (string | number | null)[] = [];
 
