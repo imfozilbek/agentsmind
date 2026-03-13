@@ -1,6 +1,8 @@
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
+const MAX_REVIEW_ROUNDS = 3;
+
 const SYSTEM_PROMPT = `You are a senior code reviewer. You review code changes for quality, correctness, and security.
 
 Rules:
@@ -22,6 +24,13 @@ interface ReviewResponse {
   comment: string;
 }
 
+interface StatusLogEntry {
+  id: number;
+  task_id: number;
+  status: string;
+  changed_at: string;
+}
+
 export class ReviewerAgent extends BaseAgent {
   get role() { return "reviewer"; }
 
@@ -37,9 +46,31 @@ export class ReviewerAgent extends BaseAgent {
     }
   }
 
+  private async getReviewCount(taskId: number): Promise<number> {
+    try {
+      const log = await this.get<StatusLogEntry[]>(`/tasks/${taskId}/status-log`);
+      return log.filter(e => e.status === "review").length;
+    } catch {
+      return 0;
+    }
+  }
+
   private async review(task: Task): Promise<void> {
     if (!task.output) {
       console.log(`[${this.config.id}] Task #${task.id} has no output, skipping`);
+      return;
+    }
+
+    // Check review iteration count
+    const reviewCount = await this.getReviewCount(task.id);
+    if (reviewCount >= MAX_REVIEW_ROUNDS) {
+      console.log(`[${this.config.id}] Task #${task.id} exceeded ${MAX_REVIEW_ROUNDS} review rounds — failing`);
+      await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
+      await this.post(
+        "general",
+        `Task #${task.id} FAILED: exceeded ${MAX_REVIEW_ROUNDS} review iterations. Needs manual intervention.`,
+      );
+      await this.reportTaskFailed(task.id, `exceeded ${MAX_REVIEW_ROUNDS} review rounds`);
       return;
     }
 
@@ -47,7 +78,7 @@ export class ReviewerAgent extends BaseAgent {
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content: `Review this task implementation:\n\nTask: ${task.title}\nDescription: ${task.description}\nAssigned to: ${task.assigned_to}\n\nGenerated code:\n${task.output}`,
+        content: `Review this task implementation:\n\nTask: ${task.title}\nDescription: ${task.description}\nAssigned to: ${task.assigned_to}\nReview round: ${reviewCount + 1}/${MAX_REVIEW_ROUNDS}\n\nGenerated code:\n${task.output}`,
       },
     ], { temperature: 0.1 });
 
@@ -73,7 +104,7 @@ export class ReviewerAgent extends BaseAgent {
       await this.post("general", `Approved task #${task.id}: "${task.title}"`);
     } else {
       await this.api("PATCH", `/tasks/${task.id}`, { status: "in_progress" });
-      await this.post("general", `Changes requested on task #${task.id}: ${result.comment}`);
+      await this.post("general", `Changes requested on task #${task.id} (round ${reviewCount + 1}/${MAX_REVIEW_ROUNDS}): ${result.comment}`);
       await this.remember(
         `Review issue on "${task.title}": ${result.comment}`,
         "review_issue",
@@ -81,6 +112,6 @@ export class ReviewerAgent extends BaseAgent {
       );
     }
 
-    console.log(`[${this.config.id}] Review for task #${task.id}: ${result.status}`);
+    console.log(`[${this.config.id}] Review for task #${task.id}: ${result.status} (round ${reviewCount + 1}/${MAX_REVIEW_ROUNDS})`);
   }
 }

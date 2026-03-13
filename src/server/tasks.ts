@@ -36,6 +36,12 @@ export function taskRoutes(db: Database) {
     return c.json(q.getReadyTasks(db));
   });
 
+  // Status log (for review count tracking)
+  app.get("/:id/status-log", (c) => {
+    const id = Number(c.req.param("id"));
+    return c.json(q.getStatusLog(db, id));
+  });
+
   // Get task
   app.get("/:id", (c) => {
     const id = Number(c.req.param("id"));
@@ -50,7 +56,7 @@ export function taskRoutes(db: Database) {
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Task not found" }, 404);
 
-    const body = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority" | "commit_hash">>>();
+    const body = await c.req.json<Partial<Pick<q.Task, "status" | "assigned_to" | "title" | "description" | "priority" | "commit_hash">>>();
     const updated = q.updateTask(db, id, body);
     broadcast({ type: "task_updated", data: updated });
     return c.json(updated);
