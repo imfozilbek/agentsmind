@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { html, raw } from "hono/html";
 import type { Database } from "bun:sqlite";
+import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
 
-export function dashboardRoutes(db: Database) {
+export function dashboardRoutes(db: Database, git: GitRepo) {
   const app = new Hono();
 
   // Dashboard data API (public, no auth)
@@ -26,6 +27,65 @@ export function dashboardRoutes(db: Database) {
     ).all(100);
 
     return c.json({ stats, agents, tasks, commits, channels, posts });
+  });
+
+  // Commit detail: info + file list
+  app.get("/api/dashboard/commits/:hash", async (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+
+    const commit = q.getCommit(db, hash);
+    if (!commit) return c.json({ error: "Commit not found" }, 404);
+
+    const exists = await git.commitExists(hash);
+    if (!exists) return c.json({ ...commit, files: [] });
+
+    try {
+      const files = await git.listFiles(hash);
+      return c.json({ ...commit, files });
+    } catch {
+      return c.json({ ...commit, files: [] });
+    }
+  });
+
+  // Commit diff (against parent or show full first commit)
+  app.get("/api/dashboard/commits/:hash/diff", async (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+
+    const commit = q.getCommit(db, hash);
+    if (!commit) return c.json({ error: "Commit not found" }, 404);
+
+    const exists = await git.commitExists(hash);
+    if (!exists) return c.text("Commit not in git repo");
+
+    try {
+      let diff: string;
+      if (commit.parent_hash) {
+        diff = await git.diff(commit.parent_hash, hash);
+      } else {
+        diff = await git.diffShow(hash);
+      }
+      return c.text(diff);
+    } catch {
+      return c.text("Unable to generate diff");
+    }
+  });
+
+  // File content at commit
+  app.get("/api/dashboard/commits/:hash/files/*", async (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+
+    const filePath = c.req.path.split("/files/")[1];
+    if (!filePath) return c.json({ error: "File path required" }, 400);
+
+    try {
+      const content = await git.showFile(hash, filePath);
+      return c.text(content);
+    } catch {
+      return c.json({ error: "File not found" }, 404);
+    }
   });
 
   // Dashboard HTML
@@ -369,11 +429,183 @@ const CSS = `
     font-size: 13px;
   }
 
+  /* Commit detail modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 90vw;
+    max-width: 1000px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .modal-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+
+  .modal-close:hover { background: var(--border); color: var(--text); }
+
+  .modal-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .modal-sidebar {
+    width: 220px;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    flex-shrink: 0;
+    padding: 12px 0;
+  }
+
+  .modal-sidebar .sidebar-item {
+    padding: 6px 16px;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: var(--text-dim);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .modal-sidebar .sidebar-item:hover { background: var(--bg); color: var(--text); }
+  .modal-sidebar .sidebar-item.active { background: var(--accent-dim); color: var(--accent); }
+
+  .sidebar-label {
+    padding: 8px 16px 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+
+  .modal-content {
+    flex: 1;
+    overflow: auto;
+    padding: 0;
+  }
+
+  /* Diff view */
+  .diff-view {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre;
+    padding: 12px 0;
+  }
+
+  .diff-line {
+    padding: 0 16px;
+    min-height: 1.6em;
+  }
+
+  .diff-line.add { background: rgba(74, 222, 128, 0.1); color: var(--green); }
+  .diff-line.del { background: rgba(248, 113, 113, 0.1); color: var(--red); }
+  .diff-line.hunk { color: var(--blue); background: rgba(96, 165, 250, 0.06); }
+  .diff-line.file-header { color: var(--yellow); font-weight: 600; padding-top: 12px; }
+
+  /* File view */
+  .file-view {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre;
+    padding: 12px 16px;
+    color: var(--text);
+  }
+
+  .commit-detail-meta {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .commit-detail-meta span { display: flex; align-items: center; gap: 4px; }
+
+  /* Clickable commit items */
+  .feed-item.clickable { cursor: pointer; }
+  .feed-item.clickable:hover { background: var(--accent-dim); }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab-bar button {
+    background: none;
+    border: none;
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+  }
+
+  .tab-bar button:hover { color: var(--text); }
+  .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .modal-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 200px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
   @media (max-width: 900px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .grid { grid-template-columns: 1fr; }
     .grid:last-child { grid-template-columns: 1fr; }
     .task-board { grid-template-columns: 1fr; }
+    .modal-sidebar { display: none; }
+    .modal { width: 95vw; }
   }
 `;
 
@@ -473,7 +705,7 @@ const JS = `
     const el = document.getElementById('commits');
     if (!commits.length) { el.innerHTML = '<div class="empty">No commits yet</div>'; return; }
     el.innerHTML = commits.slice(0, 30).map(c =>
-      '<div class="feed-item">' +
+      '<div class="feed-item clickable" onclick="openCommit(\\'' + esc(c.hash) + '\\')">' +
         '<div class="feed-header">' +
           '<span class="commit-hash">' + esc(c.hash.slice(0, 8)) + '</span>' +
           '<span class="feed-time">' + timeAgo(c.created_at) + '</span>' +
@@ -484,6 +716,156 @@ const JS = `
         '</div>' +
       '</div>'
     ).join('');
+  }
+
+  // ─── Commit Detail Modal ───
+
+  async function openCommit(hash) {
+    showModal('<div class="modal-loading">Loading...</div>');
+
+    try {
+      const [infoRes, diffRes] = await Promise.all([
+        fetch('/api/dashboard/commits/' + hash),
+        fetch('/api/dashboard/commits/' + hash + '/diff'),
+      ]);
+
+      const info = await infoRes.json();
+      const diff = await diffRes.text();
+
+      renderCommitModal(info, diff, hash);
+    } catch (e) {
+      showModal('<div class="modal-loading">Failed to load commit</div>');
+    }
+  }
+
+  function showModal(bodyHTML) {
+    let overlay = document.getElementById('modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'modal-overlay';
+      overlay.className = 'modal-overlay';
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = '<div class="modal">' + bodyHTML + '</div>';
+    overlay.style.display = 'flex';
+    document.addEventListener('keydown', onEsc);
+  }
+
+  function closeModal() {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay) overlay.style.display = 'none';
+    document.removeEventListener('keydown', onEsc);
+  }
+
+  function onEsc(e) { if (e.key === 'Escape') closeModal(); }
+
+  let currentCommitHash = '';
+  let currentCommitFiles = [];
+
+  function renderCommitModal(info, diff, hash) {
+    currentCommitHash = hash;
+    currentCommitFiles = info.files || [];
+
+    const header =
+      '<div class="modal-header">' +
+        '<h3><span class="commit-hash">' + esc(hash.slice(0, 8)) + '</span> ' + esc(info.message || 'no message') + '</h3>' +
+        '<button class="modal-close" onclick="closeModal()">&times;</button>' +
+      '</div>';
+
+    const meta =
+      '<div class="commit-detail-meta">' +
+        (info.agent_id ? '<span>Agent: ' + esc(info.agent_id) + '</span>' : '') +
+        (info.parent_hash ? '<span>Parent: ' + esc(info.parent_hash.slice(0, 8)) + '</span>' : '<span>Root commit</span>') +
+        '<span>' + esc(info.created_at || '') + '</span>' +
+      '</div>';
+
+    const tabs =
+      '<div class="tab-bar">' +
+        '<button class="active" onclick="switchTab(this, \\'diff\\')" data-tab="diff">Diff</button>' +
+        '<button onclick="switchTab(this, \\'files\\')" data-tab="files">Files (' + currentCommitFiles.length + ')</button>' +
+      '</div>';
+
+    const sidebar = currentCommitFiles.length > 0
+      ? '<div class="modal-sidebar">' +
+          '<div class="sidebar-label">Files</div>' +
+          currentCommitFiles.map(f =>
+            '<div class="sidebar-item" onclick="viewFile(\\'' + esc(f) + '\\')" title="' + esc(f) + '">' + esc(f.split('/').pop()) + '</div>'
+          ).join('') +
+        '</div>'
+      : '';
+
+    const diffHTML = renderDiff(diff);
+
+    const body =
+      meta + tabs +
+      '<div class="modal-body">' +
+        sidebar +
+        '<div class="modal-content" id="modal-content">' + diffHTML + '</div>' +
+      '</div>';
+
+    showModal(header + body);
+  }
+
+  function renderDiff(diff) {
+    if (!diff || !diff.trim()) return '<div class="modal-loading">No changes</div>';
+
+    const lines = diff.split('\\n');
+    let html = '<div class="diff-view">';
+    for (const line of lines) {
+      let cls = '';
+      if (line.startsWith('+') && !line.startsWith('+++')) cls = 'add';
+      else if (line.startsWith('-') && !line.startsWith('---')) cls = 'del';
+      else if (line.startsWith('@@')) cls = 'hunk';
+      else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) cls = 'file-header';
+      html += '<div class="diff-line ' + cls + '">' + esc(line) + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function switchTab(btn, tab) {
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    if (tab === 'diff') {
+      fetch('/api/dashboard/commits/' + currentCommitHash + '/diff')
+        .then(r => r.text())
+        .then(diff => { document.getElementById('modal-content').innerHTML = renderDiff(diff); });
+    } else if (tab === 'files') {
+      renderFileList();
+    }
+  }
+
+  function renderFileList() {
+    const content = document.getElementById('modal-content');
+    if (!currentCommitFiles.length) {
+      content.innerHTML = '<div class="modal-loading">No files</div>';
+      return;
+    }
+    content.innerHTML = '<div style="padding: 12px;">' +
+      currentCommitFiles.map(f =>
+        '<div class="sidebar-item" onclick="viewFile(\\'' + esc(f) + '\\')" style="padding: 8px 16px;">' + esc(f) + '</div>'
+      ).join('') +
+    '</div>';
+  }
+
+  async function viewFile(path) {
+    const content = document.getElementById('modal-content');
+    content.innerHTML = '<div class="modal-loading">Loading...</div>';
+
+    // Highlight active sidebar item
+    document.querySelectorAll('.modal-sidebar .sidebar-item').forEach(el => {
+      el.classList.toggle('active', el.getAttribute('title') === path);
+    });
+
+    try {
+      const res = await fetch('/api/dashboard/commits/' + currentCommitHash + '/files/' + path);
+      const text = await res.text();
+      content.innerHTML = '<div class="file-view">' + esc(text) + '</div>';
+    } catch {
+      content.innerHTML = '<div class="modal-loading">Failed to load file</div>';
+    }
   }
 
   function formatStatus(s) {

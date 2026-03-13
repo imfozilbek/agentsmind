@@ -65,4 +65,13 @@ export class GitRepo {
   async showFile(hash: string, filePath: string): Promise<string> {
     return $`git -C ${this.path} show ${hash}:${filePath}`.text();
   }
+
+  async listFiles(hash: string): Promise<string[]> {
+    const result = await $`git -C ${this.path} ls-tree -r --name-only ${hash}`.text();
+    return result.trim().split("\n").filter(Boolean);
+  }
+
+  async diffShow(hash: string): Promise<string> {
+    return $`git -C ${this.path} diff-tree -p ${hash}`.text();
+  }
 }

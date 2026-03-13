@@ -33,7 +33,7 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   app.route("/api/agents", agentRoutes(db));
 
   // Dashboard (public)
-  app.route("/", dashboardRoutes(db));
+  app.route("/", dashboardRoutes(db, git));
 
   // Admin
   const admin = new Hono();
