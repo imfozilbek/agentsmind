@@ -52,14 +52,18 @@ export class TesterAgent extends BaseAgent {
     await super.start();
   }
 
+  private testedTasks = new Set<number>();
+
   protected async tick(): Promise<void> {
     const tasks = await this.get<Task[]>("/tasks?status=done");
 
     for (const task of tasks) {
       if (task.parent_id) continue; // Only test parent tasks (full features)
+      if (this.testedTasks.has(task.id)) continue; // Don't re-test same task
 
       console.log(`[${this.config.id}] Writing tests for task #${task.id}: "${task.title}"`);
       await this.writeAndRunTests(task);
+      this.testedTasks.add(task.id);
     }
   }
 
@@ -127,6 +131,22 @@ export class TesterAgent extends BaseAgent {
       "general",
       `Tests ${status} for task #${task.id}: "${task.title}" — ${result.summary}\n\`\`\`\n${outputTruncated}\n\`\`\``,
     );
+
+    // If tests failed, send subtasks back to review for re-iteration
+    if (!testResult.passed) {
+      const subtasks = await this.get<Task[]>(`/tasks/${task.id}/subtasks`);
+      const doneSubtasks = subtasks.filter(s => s.status === "done");
+      for (const sub of doneSubtasks) {
+        await this.api("PATCH", `/tasks/${sub.id}`, { status: "review" });
+      }
+      console.log(`[${this.config.id}] Sent ${doneSubtasks.length} subtasks back to review due to test failure`);
+      await this.post(
+        "general",
+        `Test failure on task #${task.id} — sent ${doneSubtasks.length} subtasks back to review for fixes.`,
+      );
+      // Allow re-testing after fixes
+      this.testedTasks.delete(task.id);
+    }
   }
 
   private async writeFile(filePath: string, content: string): Promise<void> {
