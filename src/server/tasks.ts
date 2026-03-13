@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
+import { broadcast } from "./ws.ts";
 
 export function taskRoutes(db: Database) {
   const app = new Hono<Env>();
@@ -16,6 +17,7 @@ export function taskRoutes(db: Database) {
 
     const agent = c.get("agent");
     const task = q.createTask(db, body.title.trim(), body.description ?? "", body.priority ?? 0, agent.id, body.parent_id ?? null);
+    broadcast({ type: "task_created", data: task });
     return c.json(task, 201);
   });
 
@@ -45,6 +47,7 @@ export function taskRoutes(db: Database) {
 
     const body = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority" | "commit_hash">>>();
     const updated = q.updateTask(db, id, body);
+    broadcast({ type: "task_updated", data: updated });
     return c.json(updated);
   });
 
@@ -59,6 +62,7 @@ export function taskRoutes(db: Database) {
     if (!agent) return c.json({ error: "Agent not found" }, 404);
 
     const updated = q.updateTask(db, id, { assigned_to: body.agent_id, status: "in_progress" });
+    broadcast({ type: "task_assigned", data: updated });
     return c.json(updated);
   });
 

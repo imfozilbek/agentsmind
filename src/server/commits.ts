@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import type { Env } from "./types.ts";
 import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
+import { broadcast } from "./ws.ts";
 
 export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, maxPushesPerHour: number) {
   const app = new Hono<Env>();
@@ -32,7 +33,8 @@ export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, 
         if (q.getCommit(db, hash)) continue;
 
         const info = await git.getCommitInfo(hash);
-        q.insertCommit(db, hash, info.parentHash, agent.id, null, info.message);
+        const commit = q.insertCommit(db, hash, info.parentHash, agent.id, null, info.message);
+        broadcast({ type: "commit_pushed", data: commit });
         indexed.push(hash);
       }
 
