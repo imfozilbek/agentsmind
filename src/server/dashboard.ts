@@ -329,6 +329,16 @@ function dashboardHTML() {
     </div>
   </section>
 
+  <section class="panel timeline-panel" id="timeline-panel">
+    <div class="panel-header">
+      <h2>Timeline</h2>
+      <select class="form-input" id="timeline-agent-filter" onchange="renderTimeline()" style="width:150px">
+        <option value="">All agents</option>
+      </select>
+    </div>
+    <div id="timeline" class="timeline-container"><div class="empty">No tasks yet</div></div>
+  </section>
+
   <section class="panel metrics-panel">
     <h2>Metrics</h2>
     <div id="metrics"></div>
@@ -1062,6 +1072,97 @@ const CSS = `
     font-size: 13px;
   }
 
+  /* Timeline */
+  .timeline-panel {
+    margin-bottom: 24px;
+    max-height: none;
+  }
+
+  .timeline-container {
+    overflow-x: auto;
+    padding: 8px 0;
+    min-height: 60px;
+  }
+
+  .tl-header {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+  }
+
+  .tl-header-label { width: 180px; flex-shrink: 0; }
+
+  .tl-header-ticks {
+    flex: 1;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .tl-tick {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: center;
+  }
+
+  .tl-row {
+    display: flex;
+    align-items: center;
+    height: 26px;
+    margin-bottom: 4px;
+  }
+
+  .tl-label {
+    width: 180px;
+    flex-shrink: 0;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 8px;
+    color: var(--text-dim);
+  }
+
+  .tl-track {
+    flex: 1;
+    position: relative;
+    height: 100%;
+  }
+
+  .tl-bar {
+    position: absolute;
+    height: 18px;
+    top: 4px;
+    border-radius: 4px;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    padding: 0 6px;
+    color: white;
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: pointer;
+    min-width: 4px;
+  }
+
+  .tl-bar.todo { background: var(--text-dim); }
+  .tl-bar.planned { background: var(--blue); }
+  .tl-bar.in_progress { background: var(--accent); }
+  .tl-bar.review { background: var(--yellow); color: #000; }
+  .tl-bar.done { background: var(--green); color: #000; }
+  .tl-bar.failed { background: var(--red); }
+  .tl-bar:hover { opacity: 0.85; filter: brightness(1.1); }
+
+  .tl-now {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--red);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
   /* File browser */
   .files-panel {
     margin-bottom: 24px;
@@ -1363,6 +1464,8 @@ const JS = `
     renderCommits(data.commits);
     renderMetrics(metrics);
     loadFileTree();
+    populateTimelineFilter(data.agents);
+    renderTimeline();
   }
 
   function renderStats(s) {
@@ -1895,6 +1998,92 @@ const JS = `
     }
 
     el.innerHTML = html;
+  }
+
+  // ─── Timeline ───
+
+  function populateTimelineFilter(agents) {
+    var sel = document.getElementById('timeline-agent-filter');
+    if (!sel) return;
+    var cur = sel.value;
+    var html = '<option value="">All agents</option>';
+    for (var i = 0; i < agents.length; i++) {
+      html += '<option value="' + esc(agents[i].id) + '"' + (agents[i].id === cur ? ' selected' : '') + '>' + esc(agents[i].id) + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  function renderTimeline() {
+    var el = document.getElementById('timeline');
+    if (!lastData || !lastData.tasks || lastData.tasks.length === 0) {
+      el.innerHTML = '<div class="empty">No tasks yet</div>';
+      return;
+    }
+
+    var agentFilter = (document.getElementById('timeline-agent-filter') || {}).value || '';
+    var tasks = lastData.tasks.filter(function(t) { return t.created_at; });
+    if (agentFilter) tasks = tasks.filter(function(t) { return t.assigned_to === agentFilter; });
+
+    if (tasks.length === 0) {
+      el.innerHTML = '<div class="empty">No matching tasks</div>';
+      return;
+    }
+
+    // Calculate time range
+    var now = Date.now();
+    var minTime = Infinity;
+    var maxTime = -Infinity;
+    for (var i = 0; i < tasks.length; i++) {
+      var start = new Date(tasks[i].created_at + 'Z').getTime();
+      var end = (tasks[i].status === 'done' || tasks[i].status === 'failed')
+        ? new Date(tasks[i].updated_at + 'Z').getTime()
+        : now;
+      if (start < minTime) minTime = start;
+      if (end > maxTime) maxTime = end;
+    }
+    if (now > maxTime) maxTime = now;
+    var range = maxTime - minTime || 1;
+
+    // Time ticks
+    var tickCount = 6;
+    var headerHTML = '<div class="tl-header"><div class="tl-header-label"></div><div class="tl-header-ticks">';
+    for (var i = 0; i <= tickCount; i++) {
+      var t = new Date(minTime + (range * i / tickCount));
+      var label = t.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      headerHTML += '<span class="tl-tick">' + label + '</span>';
+    }
+    headerHTML += '</div></div>';
+
+    // Task bars (cap at 50)
+    var rowsHTML = '';
+    var shown = tasks.slice(0, 50);
+    for (var i = 0; i < shown.length; i++) {
+      var t = shown[i];
+      var start = new Date(t.created_at + 'Z').getTime();
+      var end = (t.status === 'done' || t.status === 'failed')
+        ? new Date(t.updated_at + 'Z').getTime()
+        : now;
+      var leftPct = ((start - minTime) / range * 100).toFixed(2);
+      var widthPct = Math.max(((end - start) / range * 100), 0.5).toFixed(2);
+
+      rowsHTML += '<div class="tl-row">' +
+        '<div class="tl-label">#' + t.id + ' ' + esc(t.title) + '</div>' +
+        '<div class="tl-track">' +
+          '<div class="tl-bar ' + esc(t.status) + '" ' +
+            'style="left:' + leftPct + '%;width:' + widthPct + '%" ' +
+            'onclick="openTask(' + t.id + ')" ' +
+            'title="' + esc(t.title) + ' (' + esc(t.status) + ')">' +
+            esc(t.assigned_to || '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    // "Now" marker
+    var nowPct = ((now - minTime) / range * 100).toFixed(2);
+
+    el.innerHTML = headerHTML + '<div style="position:relative">' + rowsHTML +
+      '<div class="tl-now" style="left:' + nowPct + '%;height:' + (shown.length * 30 + 10) + 'px"></div></div>';
   }
 
   // ─── File Browser ───
