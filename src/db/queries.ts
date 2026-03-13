@@ -125,11 +125,11 @@ export function listTasks(db: Database, status?: string, agentId?: string, limit
 
 export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, "status" | "assigned_to" | "commit_hash" | "title" | "description" | "priority">>): Task | null {
   const sets: string[] = [];
-  const values: unknown[] = [];
+  const values: (string | number | null)[] = [];
 
   for (const [key, value] of Object.entries(fields)) {
     sets.push(`${key} = ?`);
-    values.push(value);
+    values.push(value as string | number | null);
   }
 
   if (sets.length === 0) return getTask(db, id);
@@ -137,7 +137,7 @@ export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, 
   sets.push("updated_at = datetime('now')");
   values.push(id);
 
-  return db.query<Task, unknown[]>(
+  return db.prepare<Task, (string | number | null)[]>(
     `UPDATE tasks SET ${sets.join(", ")} WHERE id = ? RETURNING *`
   ).get(...values);
 }

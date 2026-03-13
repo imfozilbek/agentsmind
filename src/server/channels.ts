@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
+import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
 
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -7,7 +8,7 @@ const MAX_CHANNELS = 100;
 const MAX_POST_SIZE = 32_768;
 
 export function channelRoutes(db: Database, maxPostsPerHour: number) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   // List channels
   app.get("/", (c) => {
@@ -46,7 +47,7 @@ export function channelRoutes(db: Database, maxPostsPerHour: number) {
 
   // Create post
   app.post("/:name/posts", async (c) => {
-    const agent = c.get("agent") as q.Agent;
+    const agent = c.get("agent");
 
     if (!q.checkRateLimit(db, agent.id, "post", maxPostsPerHour)) {
       return c.json({ error: "Rate limit exceeded" }, 429);

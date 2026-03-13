@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
+import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
 
 export function taskRoutes(db: Database) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   // Create task
   app.post("/", async (c) => {
@@ -13,7 +14,7 @@ export function taskRoutes(db: Database) {
       return c.json({ error: "title is required" }, 400);
     }
 
-    const agent = c.get("agent") as q.Agent;
+    const agent = c.get("agent");
     const task = q.createTask(db, body.title.trim(), body.description ?? "", body.priority ?? 0, agent.id, body.parent_id ?? null);
     return c.json(task, 201);
   });

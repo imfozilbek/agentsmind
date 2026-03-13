@@ -1,9 +1,10 @@
 import type { Context, Next } from "hono";
 import type { Database } from "bun:sqlite";
+import type { Env } from "./types.ts";
 import { getAgentByKey } from "../db/queries.ts";
 
 export function authMiddleware(db: Database) {
-  return async (c: Context, next: Next) => {
+  return async (c: Context<Env>, next: Next) => {
     const header = c.req.header("Authorization");
     if (!header?.startsWith("Bearer ")) {
       return c.json({ error: "Missing or invalid Authorization header" }, 401);

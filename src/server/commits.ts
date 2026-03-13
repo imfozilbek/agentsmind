@@ -1,15 +1,16 @@
 import { Hono } from "hono";
 import { $ } from "bun";
 import type { Database } from "bun:sqlite";
+import type { Env } from "./types.ts";
 import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
 
 export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, maxPushesPerHour: number) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   // Push bundle
   app.post("/push", async (c) => {
-    const agent = c.get("agent") as q.Agent;
+    const agent = c.get("agent");
 
     if (!q.checkRateLimit(db, agent.id, "push", maxPushesPerHour)) {
       return c.json({ error: "Rate limit exceeded" }, 429);
@@ -105,7 +106,7 @@ export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, 
     const b = c.req.param("b");
     if (!isValidHash(a) || !isValidHash(b)) return c.json({ error: "Invalid hash" }, 400);
 
-    const agent = c.get("agent") as q.Agent;
+    const agent = c.get("agent");
     if (!q.checkRateLimit(db, agent.id, "diff", 60)) {
       return c.json({ error: "Rate limit exceeded" }, 429);
     }

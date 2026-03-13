@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
+import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
 
 export function reviewRoutes(db: Database) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   // Submit review
   app.post("/", async (c) => {
-    const agent = c.get("agent") as q.Agent;
+    const agent = c.get("agent");
     const body = await c.req.json<{ commit_hash: string; status: string; comment: string }>();
 
     if (!body.commit_hash || !body.status || !body.comment?.trim()) {
