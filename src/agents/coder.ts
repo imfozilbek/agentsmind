@@ -1,6 +1,5 @@
-import { $ } from "bun";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
@@ -34,20 +33,21 @@ export class CoderAgent extends BaseAgent {
   get role() { return "coder"; }
 
   override async start(): Promise<void> {
-    this.repoPath = this.config.workDir
-      ? join(this.config.workDir, this.config.id)
-      : join("data", "workspaces", this.config.id);
+    this.repoPath = resolve(
+      this.config.workDir
+        ? join(this.config.workDir, this.config.id)
+        : join("data", "workspaces", this.config.id)
+    );
 
-    await this.initRepo();
+    this.initRepo();
     await super.start();
   }
 
-  private async initRepo(): Promise<void> {
+  private initRepo(): void {
     if (!existsSync(this.repoPath)) {
       mkdirSync(this.repoPath, { recursive: true });
-      await $`git -C ${this.repoPath} init`.quiet();
-      // Initial empty commit so we always have a parent
-      await $`git -C ${this.repoPath} commit --allow-empty -m "init"`.quiet();
+      Bun.spawnSync(["git", "-C", this.repoPath, "init"]);
+      Bun.spawnSync(["git", "-C", this.repoPath, "commit", "--allow-empty", "-m", "init"]);
       console.log(`[${this.config.id}] Initialized workspace at ${this.repoPath}`);
     }
   }
@@ -114,25 +114,32 @@ export class CoderAgent extends BaseAgent {
     }
 
     // Git add + commit
-    await $`git -C ${this.repoPath} add -A`.quiet();
+    Bun.spawnSync(["git", "-C", this.repoPath, "add", "-A"]);
     const commitMsg = result.commit_message || `task #${task.id}: ${task.title}`;
-    await $`git -C ${this.repoPath} commit -m ${commitMsg} --allow-empty`.quiet();
+    Bun.spawnSync(["git", "-C", this.repoPath, "commit", "-m", commitMsg, "--allow-empty"]);
 
     // Get commit hash
-    const hash = (await $`git -C ${this.repoPath} rev-parse HEAD`.text()).trim();
+    const hashProc = Bun.spawnSync(["git", "-C", this.repoPath, "rev-parse", "HEAD"]);
+    const hash = hashProc.stdout.toString().trim();
     console.log(`[${this.config.id}] Committed ${hash.slice(0, 8)} for task #${task.id}`);
 
     // Create bundle and push to server
     const bundlePath = join(this.repoPath, `task-${task.id}.bundle`);
     try {
-      await $`git -C ${this.repoPath} bundle create ${bundlePath} --all`.quiet();
-      const pushResult = await this.pushBundle(bundlePath);
-      console.log(`[${this.config.id}] Pushed ${pushResult.indexed.length} commits to server`);
+      const proc = Bun.spawnSync(["git", "-C", this.repoPath, "bundle", "create", bundlePath, "--all"]);
+      if (proc.exitCode !== 0) {
+        console.error(`[${this.config.id}] Bundle create failed: ${proc.stderr.toString()}`);
+      } else {
+        const bundleFile = Bun.file(bundlePath);
+        console.log(`[${this.config.id}] Bundle created: ${bundleFile.size} bytes`);
+        const pushResult = await this.pushBundle(bundlePath);
+        console.log(`[${this.config.id}] Pushed ${pushResult.indexed.length} commits to server`);
+      }
     } catch (err) {
       console.error(`[${this.config.id}] Push failed:`, err);
-      // Continue anyway — code is saved locally and in task output
     } finally {
-      if (existsSync(bundlePath)) await $`rm ${bundlePath}`.quiet();
+      const f = Bun.file(bundlePath);
+      if (await f.exists()) { try { await Bun.file(bundlePath).unlink?.(); } catch { /* ignore */ } }
     }
 
     // Save output + commit hash to task, mark for review
