@@ -88,6 +88,41 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     }
   });
 
+  // ─── Task Management API (public) ───
+
+  app.post("/api/dashboard/tasks", async (c) => {
+    const { title, description, priority, parent_id } = await c.req.json<{
+      title: string; description?: string; priority?: number; parent_id?: number;
+    }>();
+    if (!title?.trim()) return c.json({ error: "Title required" }, 400);
+    const task = q.createTask(db, title.trim(), description ?? "", priority ?? 0, null, parent_id ?? null);
+    return c.json(task, 201);
+  });
+
+  app.get("/api/dashboard/tasks/:id", (c) => {
+    const id = Number(c.req.param("id"));
+    const task = q.getTask(db, id);
+    if (!task) return c.json({ error: "Not found" }, 404);
+    const subtasks = q.getSubtasks(db, id);
+    return c.json({ ...task, subtasks });
+  });
+
+  app.patch("/api/dashboard/tasks/:id", async (c) => {
+    const id = Number(c.req.param("id"));
+    const fields = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority">>>();
+    const task = q.updateTask(db, id, fields);
+    if (!task) return c.json({ error: "Not found" }, 404);
+    return c.json(task);
+  });
+
+  app.delete("/api/dashboard/tasks/:id", (c) => {
+    const id = Number(c.req.param("id"));
+    const task = q.getTask(db, id);
+    if (!task) return c.json({ error: "Not found" }, 404);
+    db.query("DELETE FROM tasks WHERE id = ?").run(id);
+    return c.json({ ok: true });
+  });
+
   // Metrics API (public)
   app.get("/api/dashboard/metrics", (c) => {
     return c.json(q.getMetricsSummary(db));
@@ -132,7 +167,10 @@ function dashboardHTML() {
     </section>
 
     <section class="panel wide">
-      <h2>Tasks</h2>
+      <div class="panel-header">
+        <h2>Tasks</h2>
+        <button class="btn-new" onclick="openNewTaskForm()">+ New Task</button>
+      </div>
       <div class="task-board" id="tasks"></div>
     </section>
   </div>
@@ -437,6 +475,168 @@ const CSS = `
     text-align: center;
     padding: 40px;
     font-size: 13px;
+  }
+
+  /* Panel header with button */
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  .panel-header h2 { margin-bottom: 0; }
+
+  .btn-new {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .btn-new:hover { opacity: 0.85; }
+
+  /* Form styles */
+  .form-group {
+    margin-bottom: 14px;
+  }
+
+  .form-group label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    font-weight: 500;
+  }
+
+  .form-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+
+  .form-input:focus { border-color: var(--accent); }
+
+  textarea.form-input {
+    min-height: 80px;
+    resize: vertical;
+  }
+
+  .form-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .form-row .form-group { flex: 1; }
+
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+  }
+
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { opacity: 0.85; }
+  .btn-secondary { background: var(--border); color: var(--text); }
+  .btn-secondary:hover { background: var(--text-dim); }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-danger:hover { opacity: 0.85; }
+
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Task detail */
+  .task-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 180px;
+    gap: 16px;
+    padding: 16px 20px;
+  }
+
+  .task-detail-main { overflow: auto; }
+
+  .task-detail-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .detail-field {
+    margin-bottom: 12px;
+  }
+
+  .detail-field .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  .detail-field .value {
+    font-size: 13px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .status-badge.todo { background: var(--border); color: var(--text-dim); }
+  .status-badge.planned { background: rgba(96,165,250,0.15); color: var(--blue); }
+  .status-badge.in_progress { background: var(--accent-dim); color: var(--accent); }
+  .status-badge.review { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .status-badge.done { background: rgba(74,222,128,0.15); color: var(--green); }
+  .status-badge.failed { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  .subtask-list {
+    margin-top: 8px;
+  }
+
+  .subtask-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .subtask-item:last-child { border-bottom: none; }
+
+  .task-card.clickable { cursor: pointer; }
+  .task-card.clickable:hover { background: var(--accent-dim); }
+
+  select.form-input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b6b80' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
   }
 
   /* Metrics */
@@ -790,8 +990,8 @@ const JS = `
       '<div class="task-column">' +
         '<h3>' + formatStatus(status) + ' <span class="count">' + items.length + '</span></h3>' +
         (items.length === 0 ? '' : items.map(t =>
-          '<div class="task-card ' + esc(t.status) + '">' +
-            '<div class="task-title">' + esc(t.title) + '</div>' +
+          '<div class="task-card clickable ' + esc(t.status) + '" onclick="openTask(' + t.id + ')">' +
+            '<div class="task-title">#' + t.id + ' ' + esc(t.title) + '</div>' +
             '<div class="task-meta">' +
               (t.assigned_to ? esc(t.assigned_to) : 'unassigned') +
               (t.parent_id ? ' · subtask' : '') +
@@ -982,6 +1182,163 @@ const JS = `
     } catch {
       content.innerHTML = '<div class="modal-loading">Failed to load file</div>';
     }
+  }
+
+  // ─── Task Management ───
+
+  function openNewTaskForm() {
+    const header =
+      '<div class="modal-header">' +
+        '<h3>New Task</h3>' +
+        '<button class="modal-close" onclick="closeModal()">&times;</button>' +
+      '</div>';
+
+    const body =
+      '<div style="padding: 20px;">' +
+        '<div class="form-group">' +
+          '<label>Title</label>' +
+          '<input class="form-input" id="new-task-title" placeholder="What needs to be done?" autofocus />' +
+        '</div>' +
+        '<div class="form-group">' +
+          '<label>Description</label>' +
+          '<textarea class="form-input" id="new-task-desc" placeholder="Details, requirements, context..."></textarea>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="form-group">' +
+            '<label>Priority</label>' +
+            '<select class="form-input" id="new-task-priority">' +
+              '<option value="0">Normal</option>' +
+              '<option value="1">High</option>' +
+              '<option value="2">Critical</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-actions">' +
+          '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+          '<button class="btn btn-primary" id="btn-create-task" onclick="createTask()">Create Task</button>' +
+        '</div>' +
+      '</div>';
+
+    showModal(header + body);
+    setTimeout(() => document.getElementById('new-task-title')?.focus(), 100);
+  }
+
+  async function createTask() {
+    const title = document.getElementById('new-task-title').value.trim();
+    const description = document.getElementById('new-task-desc').value.trim();
+    const priority = Number(document.getElementById('new-task-priority').value);
+
+    if (!title) { document.getElementById('new-task-title').focus(); return; }
+
+    const btn = document.getElementById('btn-create-task');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+      const res = await fetch('/api/dashboard/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description, priority }),
+      });
+      if (res.ok) {
+        closeModal();
+        fetchData();
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Create Task';
+    }
+  }
+
+  async function openTask(id) {
+    showModal('<div class="modal-loading">Loading...</div>');
+
+    try {
+      const res = await fetch('/api/dashboard/tasks/' + id);
+      const task = await res.json();
+      renderTaskDetail(task);
+    } catch {
+      showModal('<div class="modal-loading">Failed to load task</div>');
+    }
+  }
+
+  function renderTaskDetail(task) {
+    const header =
+      '<div class="modal-header">' +
+        '<h3>#' + task.id + ' ' + esc(task.title) + '</h3>' +
+        '<button class="modal-close" onclick="closeModal()">&times;</button>' +
+      '</div>';
+
+    const statuses = ['todo', 'planned', 'in_progress', 'review', 'done', 'failed'];
+    const statusOptions = statuses.map(s =>
+      '<option value="' + s + '"' + (s === task.status ? ' selected' : '') + '>' + s.replace(/_/g, ' ') + '</option>'
+    ).join('');
+
+    const subtasksHTML = task.subtasks && task.subtasks.length > 0
+      ? '<div class="detail-field">' +
+          '<div class="label">Subtasks</div>' +
+          '<div class="subtask-list">' +
+            task.subtasks.map(s =>
+              '<div class="subtask-item">' +
+                '<span class="status-badge ' + esc(s.status) + '">' + esc(s.status.replace(/_/g, ' ')) + '</span>' +
+                '<span style="cursor:pointer" onclick="openTask(' + s.id + ')">' + esc(s.title) + '</span>' +
+              '</div>'
+            ).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
+    const body =
+      '<div class="task-detail-grid">' +
+        '<div class="task-detail-main">' +
+          '<div class="detail-field">' +
+            '<div class="label">Description</div>' +
+            '<div class="value">' + (esc(task.description) || '<span style="color:var(--text-dim)">No description</span>') + '</div>' +
+          '</div>' +
+          subtasksHTML +
+          (task.output ? '<div class="detail-field"><div class="label">Output</div><div class="file-view" style="max-height:200px;overflow:auto">' + esc(task.output.slice(0, 2000)) + '</div></div>' : '') +
+        '</div>' +
+        '<div class="task-detail-sidebar">' +
+          '<div class="detail-field">' +
+            '<div class="label">Status</div>' +
+            '<select class="form-input" onchange="updateTaskStatus(' + task.id + ', this.value)">' + statusOptions + '</select>' +
+          '</div>' +
+          '<div class="detail-field">' +
+            '<div class="label">Priority</div>' +
+            '<div class="value">' + (task.priority === 0 ? 'Normal' : task.priority === 1 ? 'High' : 'Critical') + '</div>' +
+          '</div>' +
+          '<div class="detail-field">' +
+            '<div class="label">Assigned</div>' +
+            '<div class="value">' + (esc(task.assigned_to) || 'Unassigned') + '</div>' +
+          '</div>' +
+          '<div class="detail-field">' +
+            '<div class="label">Created</div>' +
+            '<div class="value">' + esc(task.created_at) + '</div>' +
+          '</div>' +
+          (task.commit_hash ? '<div class="detail-field"><div class="label">Commit</div><div class="value"><span class="commit-hash" style="cursor:pointer" onclick="closeModal();openCommit(\\'' + esc(task.commit_hash) + '\\')">' + esc(task.commit_hash.slice(0,8)) + '</span></div></div>' : '') +
+          '<div class="form-actions" style="margin-top:auto">' +
+            '<button class="btn btn-danger" onclick="deleteTask(' + task.id + ')">Delete</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    showModal(header + body);
+  }
+
+  async function updateTaskStatus(id, status) {
+    await fetch('/api/dashboard/tasks/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    fetchData();
+  }
+
+  async function deleteTask(id) {
+    if (!confirm('Delete task #' + id + '?')) return;
+    await fetch('/api/dashboard/tasks/' + id, { method: 'DELETE' });
+    closeModal();
+    fetchData();
   }
 
   function renderMetrics(m) {
