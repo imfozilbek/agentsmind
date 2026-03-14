@@ -2011,7 +2011,7 @@ const JS = `
         '<button class="modal-close" onclick="closeModal()">&times;</button>' +
       '</div>';
 
-    const statuses = ['todo', 'planned', 'in_progress', 'review', 'done', 'failed'];
+    const statuses = ['todo', 'planned', 'in_progress', 'review', 'changes_requested', 'done', 'failed'];
     const statusOptions = statuses.map(s =>
       '<option value="' + s + '"' + (s === task.status ? ' selected' : '') + '>' + s.replace(/_/g, ' ') + '</option>'
     ).join('');
