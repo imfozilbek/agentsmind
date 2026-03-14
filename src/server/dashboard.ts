@@ -5,15 +5,30 @@ import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
 import { broadcast } from "./ws.ts";
 
-export function dashboardRoutes(db: Database, git: GitRepo) {
+export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   const app = new Hono();
+
+  // Protect mutation endpoints with admin key
+  if (adminKey) {
+    app.use("/api/dashboard/*", async (c, next) => {
+      if (["POST", "PATCH", "DELETE"].includes(c.req.method)) {
+        const header = c.req.header("Authorization");
+        if (!header?.startsWith("Bearer ") || header.slice(7) !== adminKey) {
+          return c.json({ error: "Admin authentication required" }, 401);
+        }
+      }
+      await next();
+    });
+  }
 
   // Dashboard data API (public, no auth)
   app.get("/api/dashboard", (c) => {
     const stats = q.getStats(db);
     const agents = q.listAgents(db);
-    const tasks = db.query<q.Task, [number]>(
-      "SELECT * FROM tasks ORDER BY priority DESC, created_at DESC LIMIT ?"
+    const tasks = db.query<Omit<q.Task, "output">, [number]>(
+      `SELECT id, title, description, status, priority, parent_id, assigned_to,
+       created_by, commit_hash, created_at, updated_at
+       FROM tasks ORDER BY priority DESC, created_at DESC LIMIT ?`
     ).all(100);
     const commits = q.listCommits(db, undefined, 50, 0);
     const channels = q.listChannels(db);
@@ -80,8 +95,8 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
     const hash = c.req.param("hash");
     if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
 
-    const filePath = c.req.path.split("/files/")[1];
-    if (!filePath) return c.json({ error: "File path required" }, 400);
+    const filePath = decodeURIComponent(c.req.path.split("/files/")[1] ?? "");
+    if (!filePath || filePath.includes("..") || filePath.startsWith("/")) return c.json({ error: "Invalid file path" }, 400);
 
     try {
       const content = await git.showFile(hash, filePath);
@@ -117,10 +132,14 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
   app.patch("/api/dashboard/tasks/:id", async (c) => {
     const id = Number(c.req.param("id"));
     const fields = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority">>>();
-    const task = q.updateTask(db, id, fields);
-    if (!task) return c.json({ error: "Not found" }, 404);
-    broadcast({ type: "task_updated", data: task });
-    return c.json(task);
+    try {
+      const task = q.updateTask(db, id, fields);
+      if (!task) return c.json({ error: "Not found" }, 404);
+      broadcast({ type: "task_updated", data: task });
+      return c.json(task);
+    } catch (e: unknown) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
   });
 
   // Task dependency management
@@ -176,7 +195,7 @@ export function dashboardRoutes(db: Database, git: GitRepo) {
 
   app.get("/api/dashboard/files/content", async (c) => {
     const path = c.req.query("path");
-    if (!path) return c.json({ error: "path required" }, 400);
+    if (!path || path.includes("..") || path.startsWith("/")) return c.json({ error: "Invalid path" }, 400);
     const commits = q.listCommits(db, undefined, 1, 0);
     if (commits.length === 0) return c.json({ error: "No commits" }, 404);
     const hash = commits[0]!.hash;
@@ -295,6 +314,7 @@ function dashboardHTML() {
           <option value="planned">Planned</option>
           <option value="in_progress">In Progress</option>
           <option value="review">Review</option>
+          <option value="changes_requested">Changes Requested</option>
           <option value="done">Done</option>
           <option value="failed">Failed</option>
         </select>
@@ -1413,6 +1433,24 @@ const JS = `
   let wsConnected = false;
   let pollTimer = null;
 
+  // ─── Auth ───
+
+  function getAdminKey() {
+    var key = localStorage.getItem('agentsmind-admin-key');
+    if (!key) {
+      key = prompt('Enter admin key for task management:');
+      if (key) localStorage.setItem('agentsmind-admin-key', key);
+    }
+    return key;
+  }
+
+  function authHeaders() {
+    var key = getAdminKey();
+    var h = { 'Content-Type': 'application/json' };
+    if (key) h['Authorization'] = 'Bearer ' + key;
+    return h;
+  }
+
   // ─── WebSocket ───
 
   function connectWS() {
@@ -1922,7 +1960,7 @@ const JS = `
     try {
       const res = await fetch('/api/dashboard/tasks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ title, description, priority }),
       });
       if (res.ok) {
@@ -2053,7 +2091,7 @@ const JS = `
   async function updateTaskStatus(id, status) {
     await fetch('/api/dashboard/tasks/' + id, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ status }),
     });
     fetchData();
@@ -2066,7 +2104,7 @@ const JS = `
     try {
       var res = await fetch('/api/dashboard/tasks/' + taskId + '/dependencies', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ depends_on_id: depId }),
       });
       if (!res.ok) { var err = await res.json(); alert(err.error || 'Failed'); return; }
@@ -2076,14 +2114,14 @@ const JS = `
   }
 
   async function removeDep(taskId, depId) {
-    await fetch('/api/dashboard/tasks/' + taskId + '/dependencies/' + depId, { method: 'DELETE' });
+    await fetch('/api/dashboard/tasks/' + taskId + '/dependencies/' + depId, { method: 'DELETE', headers: authHeaders() });
     openTask(taskId);
     fetchData();
   }
 
   async function deleteTask(id) {
     if (!confirm('Delete task #' + id + '?')) return;
-    await fetch('/api/dashboard/tasks/' + id, { method: 'DELETE' });
+    await fetch('/api/dashboard/tasks/' + id, { method: 'DELETE', headers: authHeaders() });
     closeModal();
     fetchData();
   }

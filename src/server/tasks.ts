@@ -57,24 +57,27 @@ export function taskRoutes(db: Database) {
     if (!task) return c.json({ error: "Task not found" }, 404);
 
     const body = await c.req.json<Partial<Pick<q.Task, "status" | "assigned_to" | "title" | "description" | "priority" | "commit_hash">>>();
-    const updated = q.updateTask(db, id, body);
-    broadcast({ type: "task_updated", data: updated });
-    return c.json(updated);
+    try {
+      const updated = q.updateTask(db, id, body);
+      broadcast({ type: "task_updated", data: updated });
+      return c.json(updated);
+    } catch (e: unknown) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
   });
 
-  // Assign task
+  // Assign task (atomic claim)
   app.post("/:id/assign", async (c) => {
     const id = Number(c.req.param("id"));
-    const task = q.getTask(db, id);
-    if (!task) return c.json({ error: "Task not found" }, 404);
-
     const body = await c.req.json<{ agent_id: string }>();
     const agent = q.getAgentById(db, body.agent_id);
     if (!agent) return c.json({ error: "Agent not found" }, 404);
 
-    const updated = q.updateTask(db, id, { assigned_to: body.agent_id, status: "in_progress" });
-    broadcast({ type: "task_assigned", data: updated });
-    return c.json(updated);
+    const claimed = q.claimTask(db, id, body.agent_id);
+    if (!claimed) return c.json({ error: "Task not available" }, 409);
+
+    broadcast({ type: "task_assigned", data: claimed });
+    return c.json(claimed);
   });
 
   // Get subtasks
