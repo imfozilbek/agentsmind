@@ -69,40 +69,16 @@ export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, 
   // List commits
   app.get("/", (c) => {
     const agentId = c.req.query("agent");
-    const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
-    const offset = Number(c.req.query("offset")) || 0;
+    const limit = Math.max(1, Math.min(Number(c.req.query("limit")) || 50, 200));
+    const offset = Math.max(0, Number(c.req.query("offset")) || 0);
     return c.json(q.listCommits(db, agentId, limit, offset));
   });
 
-  // Get commit
-  app.get("/:hash", (c) => {
-    const hash = c.req.param("hash");
-    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
-    const commit = q.getCommit(db, hash);
-    if (!commit) return c.json({ error: "Commit not found" }, 404);
-    return c.json(commit);
-  });
-
-  // Get children
-  app.get("/:hash/children", (c) => {
-    const hash = c.req.param("hash");
-    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
-    return c.json(q.getChildren(db, hash));
-  });
-
-  // Get lineage
-  app.get("/:hash/lineage", (c) => {
-    const hash = c.req.param("hash");
-    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
-    return c.json(q.getLineage(db, hash));
-  });
-
-  // Get leaves
+  // Static routes BEFORE parametric /:hash
   app.get("/leaves", (c) => {
     return c.json(q.getLeaves(db));
   });
 
-  // Diff
   app.get("/diff/:a/:b", async (c) => {
     const a = c.req.param("a");
     const b = c.req.param("b");
@@ -118,13 +94,34 @@ export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, 
     return c.text(diff);
   });
 
+  // Parametric routes (must be after /leaves, /diff)
+  app.get("/:hash", (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+    const commit = q.getCommit(db, hash);
+    if (!commit) return c.json({ error: "Commit not found" }, 404);
+    return c.json(commit);
+  });
+
+  app.get("/:hash/children", (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+    return c.json(q.getChildren(db, hash));
+  });
+
+  app.get("/:hash/lineage", (c) => {
+    const hash = c.req.param("hash");
+    if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
+    return c.json(q.getLineage(db, hash));
+  });
+
   // Show file at commit
   app.get("/:hash/files/*", async (c) => {
     const hash = c.req.param("hash");
     if (!isValidHash(hash)) return c.json({ error: "Invalid hash" }, 400);
 
-    const filePath = c.req.path.split("/files/")[1];
-    if (!filePath) return c.json({ error: "File path required" }, 400);
+    const filePath = decodeURIComponent(c.req.path.split("/files/")[1] ?? "");
+    if (!filePath || filePath.includes("..") || filePath.startsWith("/")) return c.json({ error: "Invalid file path" }, 400);
 
     try {
       const content = await git.showFile(hash, filePath);
