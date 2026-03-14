@@ -124,7 +124,8 @@ export class AgentRunner {
         console.log(`[watchdog] Task #${task.id} stuck in_progress for ${Math.round(elapsed / 60000)}min — resetting to todo`);
 
         try {
-          await this.resetTask(task.id);
+          const didReset = await this.resetTask(task.id);
+          if (!didReset) continue; // task already moved to another status
           await this.postPublic(
             "general",
             `[watchdog] Task #${task.id} "${task.title}" was stuck for ${Math.round(elapsed / 60000)}min. Reset to todo for reassignment.`,
@@ -146,7 +147,15 @@ export class AgentRunner {
     return res.json() as Promise<TaskSummary[]>;
   }
 
-  private async resetTask(taskId: number): Promise<void> {
+  private async resetTask(taskId: number): Promise<boolean> {
+    // Re-check task is still in_progress before resetting
+    const res = await fetch(`${this.serverUrl}/api/tasks/${taskId}`, {
+      headers: { Authorization: `Bearer ${this.firstApiKey}` },
+    });
+    if (!res.ok) return false;
+    const task = (await res.json()) as TaskSummary;
+    if (task.status !== "in_progress") return false;
+
     await fetch(`${this.serverUrl}/api/tasks/${taskId}`, {
       method: "PATCH",
       headers: {
@@ -155,6 +164,7 @@ export class AgentRunner {
       },
       body: JSON.stringify({ status: "todo", assigned_to: null }),
     });
+    return true;
   }
 
   private async postPublic(channel: string, content: string): Promise<void> {
@@ -170,7 +180,9 @@ export class AgentRunner {
     } catch { /* best-effort */ }
   }
 
-  private async register(id: string, role: string): Promise<string> {
+  private async register(id: string, role: string, attempt = 0): Promise<string> {
+    if (attempt > 5) throw new Error(`Failed to register agent ${id} after ${attempt} attempts`);
+
     try {
       const res = await fetch(`${this.serverUrl}/api/agents/register`, {
         method: "POST",
@@ -179,10 +191,8 @@ export class AgentRunner {
       });
 
       if (res.status === 409) {
-        // Agent already exists, we need the key — re-register not possible
-        // In production, keys should be persisted. For now, generate a new agent with suffix.
         const newId = `${id}-${Date.now().toString(36).slice(-4)}`;
-        return this.register(newId, role);
+        return this.register(newId, role, attempt + 1);
       }
 
       const data = await res.json() as { api_key: string };
