@@ -85,6 +85,18 @@ export interface CodeSearchResult {
   rank: number;
 }
 
+// ─── Constants ───
+
+export const VALID_STATUSES = new Set([
+  "todo", "planned", "in_progress", "review",
+  "changes_requested", "done", "failed",
+]);
+
+const ALLOWED_TASK_FIELDS = new Set([
+  "status", "assigned_to", "commit_hash", "output",
+  "title", "description", "priority",
+]);
+
 // ─── Agents ───
 
 export function createAgent(db: Database, id: string, apiKey: string, role = "coder"): Agent {
@@ -151,10 +163,15 @@ export function listTasks(db: Database, status?: string, agentId?: string, limit
 }
 
 export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, "status" | "assigned_to" | "commit_hash" | "output" | "title" | "description" | "priority">>): Task | null {
+  if (fields.status && !VALID_STATUSES.has(fields.status)) {
+    throw new Error(`Invalid status: "${fields.status}"`);
+  }
+
   const sets: string[] = [];
   const values: (string | number | null)[] = [];
 
   for (const [key, value] of Object.entries(fields)) {
+    if (!ALLOWED_TASK_FIELDS.has(key)) continue;
     sets.push(`${key} = ?`);
     values.push(value as string | number | null);
   }
@@ -244,6 +261,16 @@ export function getReadyTasks(db: Database): Task[] {
      )
      ORDER BY t.priority DESC, t.created_at ASC`
   ).all();
+}
+
+export function claimTask(db: Database, taskId: number, agentId: string): Task | null {
+  const result = db.query<Task, [string, number]>(
+    `UPDATE tasks SET assigned_to = ?, status = 'in_progress', updated_at = datetime('now')
+     WHERE id = ? AND assigned_to IS NULL AND status = 'todo'
+     RETURNING *`
+  ).get(agentId, taskId) ?? null;
+  if (result) logStatusChange(db, taskId, "in_progress");
+  return result;
 }
 
 export interface DepMapEntry {
@@ -474,8 +501,11 @@ export function searchMemories(db: Database, query: string, agentId?: string, li
   ).all(...params, limit);
 }
 
-export function deleteMemory(db: Database, id: number): void {
-  db.query("DELETE FROM memories WHERE id = ?").run(id);
+export function deleteMemory(db: Database, id: number, agentId: string): boolean {
+  const result = db.query<{ id: number }, [number, string]>(
+    "DELETE FROM memories WHERE id = ? AND agent_id = ? RETURNING id"
+  ).get(id, agentId);
+  return !!result;
 }
 
 // ─── Code Index ───

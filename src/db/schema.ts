@@ -117,6 +117,16 @@ export function createDatabase(path: string): Database {
       VALUES (new.id, new.file_path, new.content, new.commit_hash);
     END;
 
+    CREATE TRIGGER IF NOT EXISTS code_index_bd BEFORE DELETE ON code_index BEGIN
+      INSERT INTO code_fts(code_fts, rowid, file_path, content, commit_hash)
+      VALUES ('delete', old.id, old.file_path, old.content, old.commit_hash);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS code_index_bu BEFORE UPDATE ON code_index BEGIN
+      INSERT INTO code_fts(code_fts, rowid, file_path, content, commit_hash)
+      VALUES ('delete', old.id, old.file_path, old.content, old.commit_hash);
+    END;
+
     CREATE TABLE IF NOT EXISTS task_dependencies (
       task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
