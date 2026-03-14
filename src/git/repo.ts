@@ -63,6 +63,9 @@ export class GitRepo {
   }
 
   async showFile(hash: string, filePath: string): Promise<string> {
+    if (filePath.includes("..") || filePath.startsWith("/") || filePath.startsWith("\\")) {
+      throw new Error("Invalid file path");
+    }
     return $`git -C ${this.path} show ${hash}:${filePath}`.text();
   }
 
