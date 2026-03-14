@@ -27,6 +27,15 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   app.use("*", cors({ origin: config.corsOrigin || "http://localhost:3000" }));
   app.use("*", logger());
 
+  // Security headers
+  app.use("*", async (c, next) => {
+    await next();
+    c.res.headers.set("X-Content-Type-Options", "nosniff");
+    c.res.headers.set("X-Frame-Options", "DENY");
+    c.res.headers.set("X-XSS-Protection", "1; mode=block");
+    c.res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  });
+
   // Public
   app.get("/api/health", (c) => c.json({ status: "ok" }));
   app.get("/api/stats", (c) => c.json(getStats(db)));
