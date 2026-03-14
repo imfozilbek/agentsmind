@@ -11,6 +11,11 @@ function safeCompare(a: string, b: string): boolean {
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+function parseId(s: string): number | null {
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   const app = new Hono();
 
@@ -125,7 +130,8 @@ export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   });
 
   app.get("/api/dashboard/tasks/:id", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Not found" }, 404);
     const subtasks = q.getSubtasks(db, id);
@@ -136,7 +142,8 @@ export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   });
 
   app.patch("/api/dashboard/tasks/:id", async (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const fields = await c.req.json<Partial<Pick<q.Task, "status" | "title" | "description" | "priority">>>();
     try {
       const task = q.updateTask(db, id, fields);
@@ -150,7 +157,8 @@ export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
 
   // Task dependency management
   app.post("/api/dashboard/tasks/:id/dependencies", async (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Not found" }, 404);
     const { depends_on_id } = await c.req.json<{ depends_on_id: number }>();
@@ -166,15 +174,18 @@ export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   });
 
   app.delete("/api/dashboard/tasks/:id/dependencies/:depId", (c) => {
-    const id = Number(c.req.param("id"));
-    const depId = Number(c.req.param("depId"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
+    const depId = parseId(c.req.param("depId"));
+    if (!depId) return c.json({ error: "Invalid ID" }, 400);
     q.removeDependency(db, id, depId);
     broadcast({ type: "task_updated", data: { id } });
     return c.json({ ok: true });
   });
 
   app.delete("/api/dashboard/tasks/:id", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Not found" }, 404);
     db.query("DELETE FROM tasks WHERE id = ?").run(id);
