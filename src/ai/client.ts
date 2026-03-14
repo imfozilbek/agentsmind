@@ -100,45 +100,45 @@ export class AIClient {
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      await this.limiter.acquire();
-      try {
-        const res = await fetch(url, init);
+    await this.limiter.acquire();
+    try {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const res = await fetch(url, init);
 
-        if (res.ok) return res;
+          if (res.ok) return res;
 
-        const body = await res.text();
+          const body = await res.text();
 
-        if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
-          // On 429, use longer backoff
-          const base = res.status === 429 ? BASE_DELAY_MS * 2 : BASE_DELAY_MS;
-          const delay = base * Math.pow(2, attempt);
-          console.warn(`[AI] ${res.status} on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms... (queue: ${this.limiter.pending})`);
-          await Bun.sleep(delay);
-          lastError = new Error(`AI API error (${res.status}): ${body}`);
-          continue;
+          if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+            const base = res.status === 429 ? BASE_DELAY_MS * 2 : BASE_DELAY_MS;
+            const delay = base * Math.pow(2, attempt);
+            console.warn(`[AI] ${res.status} on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms... (queue: ${this.limiter.pending})`);
+            await Bun.sleep(delay);
+            lastError = new Error(`AI API error (${res.status}): ${body}`);
+            continue;
+          }
+
+          throw new Error(`AI API error (${res.status}): ${body}`);
+        } catch (err) {
+          if (err instanceof Error && err.message.startsWith("AI API error")) throw err;
+
+          if (attempt < MAX_RETRIES) {
+            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+            console.warn(`[AI] Network error on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms...`);
+            await Bun.sleep(delay);
+            lastError = err as Error;
+            continue;
+          }
+
+          throw err;
         }
-
-        throw new Error(`AI API error (${res.status}): ${body}`);
-      } catch (err) {
-        if (err instanceof Error && err.message.startsWith("AI API error")) throw err;
-
-        // Network error — retry
-        if (attempt < MAX_RETRIES) {
-          const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-          console.warn(`[AI] Network error on attempt ${attempt + 1}/${MAX_RETRIES}, retrying in ${delay}ms...`);
-          await Bun.sleep(delay);
-          lastError = err as Error;
-          continue;
-        }
-
-        throw err;
-      } finally {
-        this.limiter.release();
       }
-    }
 
-    throw lastError ?? new Error("AI request failed after retries");
+      throw lastError ?? new Error("AI request failed after retries");
+    } finally {
+      this.limiter.release();
+    }
   }
 
   async chat(messages: ChatMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<ChatResponse> {
