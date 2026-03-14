@@ -170,16 +170,20 @@ export class AIClient {
       usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     };
 
-    this.onMetric?.("ai_chat", data.usage.total_tokens, {
-      prompt_tokens: data.usage.prompt_tokens,
-      completion_tokens: data.usage.completion_tokens,
+    if (!data.choices?.length) {
+      throw new Error("AI API returned empty choices");
+    }
+
+    this.onMetric?.("ai_chat", data.usage?.total_tokens ?? 0, {
+      prompt_tokens: data.usage?.prompt_tokens ?? 0,
+      completion_tokens: data.usage?.completion_tokens ?? 0,
       latency_ms: latency,
       model: this.config.model,
     });
 
     return {
       content: data.choices[0]!.message.content,
-      usage: data.usage,
+      usage: data.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     };
   }
 
@@ -202,6 +206,9 @@ export class AIClient {
       choices: { text: string }[];
     };
 
+    if (!data.choices?.length) {
+      throw new Error("AI FIM API returned empty choices");
+    }
     return data.choices[0]!.text;
   }
 }
