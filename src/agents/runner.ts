@@ -106,6 +106,7 @@ export class AgentRunner {
     this.watchdogTimer = setInterval(async () => {
       try {
         await this.checkStuckTasks(timeoutMs);
+        await this.checkParentCompletion();
       } catch (err) {
         console.error("[watchdog] Error:", err);
       }
@@ -134,6 +135,31 @@ export class AgentRunner {
           console.error(`[watchdog] Failed to reset task #${task.id}:`, err);
         }
       }
+    }
+  }
+
+  private async checkParentCompletion(): Promise<void> {
+    // Find parent tasks in "planned" status where all subtasks are done
+    const planned = await this.fetchTasks("planned");
+    for (const parent of planned) {
+      try {
+        const res = await fetch(`${this.serverUrl}/api/tasks/${parent.id}/subtasks`, {
+          headers: { Authorization: `Bearer ${this.firstApiKey}` },
+        });
+        if (!res.ok) continue;
+        const subtasks = (await res.json()) as TaskSummary[];
+        if (subtasks.length === 0) continue;
+        const allDone = subtasks.every(s => s.status === "done");
+        if (allDone) {
+          await fetch(`${this.serverUrl}/api/tasks/${parent.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.firstApiKey}` },
+            body: JSON.stringify({ status: "done" }),
+          });
+          console.log(`[watchdog] Parent task #${parent.id} completed — all ${subtasks.length} subtasks done`);
+          await this.postPublic("general", `Task #${parent.id} "${parent.title}" completed — all subtasks done!`);
+        }
+      } catch { /* best-effort */ }
     }
   }
 
