@@ -93,8 +93,7 @@ export class TesterAgent extends BaseAgent {
 
     let result: TestResponse;
     try {
-      const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      result = JSON.parse(cleaned);
+      result = this.parseAIJson<TestResponse>(response);
     } catch {
       console.error(`[${this.config.id}] Failed to parse test response`);
       return;

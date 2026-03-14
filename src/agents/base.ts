@@ -123,6 +123,11 @@ export abstract class BaseAgent {
     return response.content;
   }
 
+  protected parseAIJson<T>(response: string): T {
+    const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    return JSON.parse(cleaned);
+  }
+
   // ─── Metrics ───
 
   protected async reportMetric(event: string, value: number, meta: Record<string, unknown> = {}): Promise<void> {

@@ -204,8 +204,7 @@ export class CoderAgent extends BaseAgent {
 
     let result: CodeResponse;
     try {
-      const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      result = JSON.parse(cleaned);
+      result = this.parseAIJson<CodeResponse>(response);
     } catch {
       console.error(`[${this.config.id}] Failed to parse coder response`);
       await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });

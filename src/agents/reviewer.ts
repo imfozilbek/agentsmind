@@ -84,8 +84,7 @@ export class ReviewerAgent extends BaseAgent {
 
     let result: ReviewResponse;
     try {
-      const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      result = JSON.parse(cleaned);
+      result = this.parseAIJson<ReviewResponse>(response);
     } catch {
       console.error(`[${this.config.id}] Failed to parse review response:`, response);
       return;

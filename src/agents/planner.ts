@@ -47,8 +47,7 @@ export class PlannerAgent extends BaseAgent {
 
     let subtasks: Subtask[];
     try {
-      const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      subtasks = JSON.parse(cleaned);
+      subtasks = this.parseAIJson<Subtask[]>(response);
     } catch {
       console.error(`[${this.config.id}] Failed to parse planner response:`, response);
       return;
