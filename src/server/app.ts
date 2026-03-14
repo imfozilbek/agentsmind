@@ -100,8 +100,9 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   });
   memoryApp.delete("/:id", (c) => {
     const agent = c.get("agent");
-    const id = Number(c.req.param("id"));
-    const deleted = deleteMemory(db, id, agent.id);
+    const n = Number(c.req.param("id"));
+    if (!Number.isInteger(n) || n < 1) return c.json({ error: "Invalid ID" }, 400);
+    const deleted = deleteMemory(db, n, agent.id);
     if (!deleted) return c.json({ error: "Memory not found" }, 404);
     return c.json({ ok: true });
   });

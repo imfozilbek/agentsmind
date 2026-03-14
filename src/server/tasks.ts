@@ -135,7 +135,8 @@ export function taskRoutes(db: Database) {
   app.delete("/:id/dependencies/:depId", (c) => {
     const id = parseId(c.req.param("id"));
     if (!id) return c.json({ error: "Invalid ID" }, 400);
-    const depId = Number(c.req.param("depId"));
+    const depId = parseId(c.req.param("depId"));
+    if (!depId) return c.json({ error: "Invalid ID" }, 400);
     q.removeDependency(db, id, depId);
     broadcast({ type: "task_updated", data: { id } });
     return c.json({ ok: true });

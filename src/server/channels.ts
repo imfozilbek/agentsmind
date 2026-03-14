@@ -4,6 +4,11 @@ import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
 import { broadcast } from "./ws.ts";
 
+function parseId(s: string): number | null {
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const MAX_CHANNELS = 100;
 const MAX_POST_SIZE = 32_768;
@@ -76,14 +81,18 @@ export function channelRoutes(db: Database, maxPostsPerHour: number) {
 
   // Get post
   app.get("/posts/:id", (c) => {
-    const post = q.getPost(db, Number(c.req.param("id")));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
+    const post = q.getPost(db, id);
     if (!post) return c.json({ error: "Post not found" }, 404);
     return c.json(post);
   });
 
   // Get replies
   app.get("/posts/:id/replies", (c) => {
-    const post = q.getPost(db, Number(c.req.param("id")));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
+    const post = q.getPost(db, id);
     if (!post) return c.json({ error: "Post not found" }, 404);
     return c.json(q.getReplies(db, post.id));
   });
