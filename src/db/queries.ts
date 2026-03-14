@@ -275,11 +275,11 @@ export function claimTask(db: Database, taskId: number, agentId: string): Task |
 }
 
 export function claimRework(db: Database, taskId: number, agentId: string): Task | null {
-  const result = db.query<Task, [string, number]>(
+  const result = db.query<Task, [number, string]>(
     `UPDATE tasks SET status = 'in_progress', updated_at = datetime('now')
      WHERE id = ? AND status = 'changes_requested' AND assigned_to = ?
      RETURNING *`
-  ).get(agentId, taskId) ?? null;
+  ).get(taskId, agentId) ?? null;
   if (result) logStatusChange(db, taskId, "in_progress");
   return result;
 }
