@@ -54,7 +54,8 @@ export class PlannerAgent extends BaseAgent {
     try {
       subtasks = this.parseAIJson<Subtask[]>(response, Array.isArray);
     } catch {
-      console.error(`[${this.config.id}] Failed to parse planner response:`, response);
+      console.error(`[${this.config.id}] Failed to parse planner response — reverting task to todo`);
+      await this.api("PATCH", `/tasks/${task.id}`, { status: "todo" });
       return;
     }
 
