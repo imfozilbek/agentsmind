@@ -30,8 +30,8 @@ export function taskRoutes(db: Database) {
   app.get("/", (c) => {
     const status = c.req.query("status");
     const agentId = c.req.query("agent");
-    const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
-    const offset = Number(c.req.query("offset")) || 0;
+    const limit = Math.max(1, Math.min(Number(c.req.query("limit")) || 50, 200));
+    const offset = Math.max(0, Number(c.req.query("offset")) || 0);
     const tasks = q.listTasks(db, status, agentId, limit, offset);
     return c.json(tasks);
   });

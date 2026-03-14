@@ -41,8 +41,8 @@ export function channelRoutes(db: Database, maxPostsPerHour: number) {
     const channel = q.getChannelByName(db, c.req.param("name"));
     if (!channel) return c.json({ error: "Channel not found" }, 404);
 
-    const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
-    const offset = Number(c.req.query("offset")) || 0;
+    const limit = Math.max(1, Math.min(Number(c.req.query("limit")) || 50, 200));
+    const offset = Math.max(0, Number(c.req.query("offset")) || 0);
     return c.json(q.listPosts(db, channel.id, limit, offset));
   });
 
