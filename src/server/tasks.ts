@@ -4,6 +4,11 @@ import type { Env } from "./types.ts";
 import * as q from "../db/queries.ts";
 import { broadcast } from "./ws.ts";
 
+function parseId(s: string): number | null {
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 export function taskRoutes(db: Database) {
   const app = new Hono<Env>();
 
@@ -38,13 +43,15 @@ export function taskRoutes(db: Database) {
 
   // Status log (for review count tracking)
   app.get("/:id/status-log", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     return c.json(q.getStatusLog(db, id));
   });
 
   // Get task
   app.get("/:id", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Task not found" }, 404);
     return c.json(task);
@@ -52,7 +59,8 @@ export function taskRoutes(db: Database) {
 
   // Update task
   app.patch("/:id", async (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Task not found" }, 404);
 
@@ -68,7 +76,8 @@ export function taskRoutes(db: Database) {
 
   // Assign task (atomic claim)
   app.post("/:id/assign", async (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const body = await c.req.json<{ agent_id: string }>();
     const agent = q.getAgentById(db, body.agent_id);
     if (!agent) return c.json({ error: "Agent not found" }, 404);
@@ -80,9 +89,21 @@ export function taskRoutes(db: Database) {
     return c.json(claimed);
   });
 
+  // Claim rework (atomic: changes_requested → in_progress)
+  app.post("/:id/claim-rework", async (c) => {
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ agent_id: string }>();
+    const claimed = q.claimRework(db, id, body.agent_id);
+    if (!claimed) return c.json({ error: "Task not available for rework" }, 409);
+    broadcast({ type: "task_updated", data: claimed });
+    return c.json(claimed);
+  });
+
   // Get subtasks
   app.get("/:id/subtasks", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Task not found" }, 404);
     return c.json(q.getSubtasks(db, id));
@@ -92,7 +113,8 @@ export function taskRoutes(db: Database) {
 
   // Add dependency
   app.post("/:id/dependencies", async (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const task = q.getTask(db, id);
     if (!task) return c.json({ error: "Task not found" }, 404);
 
@@ -111,7 +133,8 @@ export function taskRoutes(db: Database) {
 
   // Remove dependency
   app.delete("/:id/dependencies/:depId", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     const depId = Number(c.req.param("depId"));
     q.removeDependency(db, id, depId);
     broadcast({ type: "task_updated", data: { id } });
@@ -120,7 +143,8 @@ export function taskRoutes(db: Database) {
 
   // List dependencies
   app.get("/:id/dependencies", (c) => {
-    const id = Number(c.req.param("id"));
+    const id = parseId(c.req.param("id"));
+    if (!id) return c.json({ error: "Invalid ID" }, 400);
     return c.json(q.getDependencies(db, id));
   });
 
