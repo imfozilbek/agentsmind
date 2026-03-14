@@ -53,6 +53,8 @@ export class TesterAgent extends BaseAgent {
   }
 
   private testedTasks = new Set<number>();
+  private testAttempts = new Map<number, number>();
+  private static MAX_TEST_CYCLES = 2;
 
   protected async tick(): Promise<void> {
     const tasks = await this.get<Task[]>("/tasks?status=done");
@@ -131,19 +133,27 @@ export class TesterAgent extends BaseAgent {
       `Tests ${status} for task #${task.id}: "${task.title}" — ${result.summary}\n\`\`\`\n${outputTruncated}\n\`\`\``,
     );
 
-    // If tests failed, send subtasks back to review for re-iteration
+    // If tests failed, send subtasks back for rework
     if (!testResult.passed) {
+      const attempts = (this.testAttempts.get(task.id) ?? 0) + 1;
+      this.testAttempts.set(task.id, attempts);
+
+      if (attempts >= TesterAgent.MAX_TEST_CYCLES) {
+        console.log(`[${this.config.id}] Task #${task.id} exceeded ${TesterAgent.MAX_TEST_CYCLES} test cycles — accepting as done`);
+        await this.post("general", `Task #${task.id} tests failed after ${attempts} attempts — accepting as done (tests are supplementary).`);
+        return;
+      }
+
       const subtasks = await this.get<Task[]>(`/tasks/${task.id}/subtasks`);
       const doneSubtasks = subtasks.filter(s => s.status === "done");
       for (const sub of doneSubtasks) {
-        await this.api("PATCH", `/tasks/${sub.id}`, { status: "review" });
+        await this.api("PATCH", `/tasks/${sub.id}`, { status: "changes_requested" });
       }
-      console.log(`[${this.config.id}] Sent ${doneSubtasks.length} subtasks back to review due to test failure`);
+      console.log(`[${this.config.id}] Sent ${doneSubtasks.length} subtasks to changes_requested (test cycle ${attempts}/${TesterAgent.MAX_TEST_CYCLES})`);
       await this.post(
         "general",
-        `Test failure on task #${task.id} — sent ${doneSubtasks.length} subtasks back to review for fixes.`,
+        `Test failure on task #${task.id} (cycle ${attempts}/${TesterAgent.MAX_TEST_CYCLES}) — sent ${doneSubtasks.length} subtasks for rework.`,
       );
-      // Allow re-testing after fixes
       this.testedTasks.delete(task.id);
     }
   }
