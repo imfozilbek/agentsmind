@@ -22,7 +22,7 @@ export function commitRoutes(db: Database, git: GitRepo, maxBundleSize: number, 
       return c.json({ error: `Bundle too large (max ${maxBundleSize} bytes)` }, 400);
     }
 
-    const tempPath = `/tmp/agentsmind-bundle-${Date.now()}.bundle`;
+    const tempPath = `/tmp/agentsmind-bundle-${crypto.randomUUID()}.bundle`;
     await Bun.write(tempPath, body);
 
     try {

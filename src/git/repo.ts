@@ -32,7 +32,7 @@ export class GitRepo {
     const tempRef = `refs/temp/bundle-${hash.slice(0, 8)}-${Date.now()}`;
     await $`git -C ${this.path} update-ref ${tempRef} ${hash}`.quiet();
 
-    const bundlePath = join(this.path, `bundle-${hash.slice(0, 8)}.bundle`);
+    const bundlePath = join(this.path, `bundle-${hash.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}.bundle`);
     try {
       await $`git -C ${this.path} bundle create ${bundlePath} ${tempRef}`.quiet();
     } finally {
