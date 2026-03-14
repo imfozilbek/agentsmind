@@ -181,16 +181,17 @@ export function updateTask(db: Database, id: number, fields: Partial<Pick<Task, 
   sets.push("updated_at = datetime('now')");
   values.push(id);
 
-  const result = db.prepare<Task, (string | number | null)[]>(
-    `UPDATE tasks SET ${sets.join(", ")} WHERE id = ? RETURNING *`
-  ).get(...values);
+  return db.transaction(() => {
+    const result = db.prepare<Task, (string | number | null)[]>(
+      `UPDATE tasks SET ${sets.join(", ")} WHERE id = ? RETURNING *`
+    ).get(...values);
 
-  // Log status change for timeline
-  if (result && fields.status) {
-    logStatusChange(db, id, fields.status);
-  }
+    if (result && fields.status) {
+      logStatusChange(db, id, fields.status);
+    }
 
-  return result;
+    return result;
+  })();
 }
 
 export function getSubtasks(db: Database, parentId: number): Task[] {
@@ -267,6 +268,16 @@ export function claimTask(db: Database, taskId: number, agentId: string): Task |
   const result = db.query<Task, [string, number]>(
     `UPDATE tasks SET assigned_to = ?, status = 'in_progress', updated_at = datetime('now')
      WHERE id = ? AND assigned_to IS NULL AND status = 'todo'
+     RETURNING *`
+  ).get(agentId, taskId) ?? null;
+  if (result) logStatusChange(db, taskId, "in_progress");
+  return result;
+}
+
+export function claimRework(db: Database, taskId: number, agentId: string): Task | null {
+  const result = db.query<Task, [string, number]>(
+    `UPDATE tasks SET status = 'in_progress', updated_at = datetime('now')
+     WHERE id = ? AND status = 'changes_requested' AND assigned_to = ?
      RETURNING *`
   ).get(agentId, taskId) ?? null;
   if (result) logStatusChange(db, taskId, "in_progress");

@@ -23,7 +23,7 @@ export function createDatabase(path: string): Database {
       description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'todo',
       priority INTEGER NOT NULL DEFAULT 0,
-      parent_id INTEGER REFERENCES tasks(id),
+      parent_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
       assigned_to TEXT REFERENCES agents(id),
       created_by TEXT,
       commit_hash TEXT,
@@ -125,6 +125,11 @@ export function createDatabase(path: string): Database {
     CREATE TRIGGER IF NOT EXISTS code_index_bu BEFORE UPDATE ON code_index BEGIN
       INSERT INTO code_fts(code_fts, rowid, file_path, content, commit_hash)
       VALUES ('delete', old.id, old.file_path, old.content, old.commit_hash);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS code_index_au AFTER UPDATE ON code_index BEGIN
+      INSERT INTO code_fts(rowid, file_path, content, commit_hash)
+      VALUES (new.id, new.file_path, new.content, new.commit_hash);
     END;
 
     CREATE TABLE IF NOT EXISTS task_dependencies (
