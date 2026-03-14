@@ -10,6 +10,7 @@ const ADMIN_KEY = process.env.ADMIN_KEY || "changeme";
 const MAX_BUNDLE_MB = Number(process.env.MAX_BUNDLE_MB) || 50;
 const MAX_PUSHES_PER_HOUR = Number(process.env.MAX_PUSHES_PER_HOUR) || 100;
 const MAX_POSTS_PER_HOUR = Number(process.env.MAX_POSTS_PER_HOUR) || 100;
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
 
 // Initialize
 const db = createDatabase(`${DATA_DIR}/agentsmind.db`);
@@ -24,6 +25,7 @@ const app = createApp(db, git, {
   maxBundleSize: MAX_BUNDLE_MB * 1024 * 1024,
   maxPushesPerHour: MAX_PUSHES_PER_HOUR,
   maxPostsPerHour: MAX_POSTS_PER_HOUR,
+  corsOrigin: CORS_ORIGIN,
 });
 
 console.log(`

@@ -18,12 +18,13 @@ export interface ServerConfig {
   maxBundleSize: number;
   maxPushesPerHour: number;
   maxPostsPerHour: number;
+  corsOrigin?: string;
 }
 
 export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   const app = new Hono();
 
-  app.use("*", cors());
+  app.use("*", cors({ origin: config.corsOrigin || "http://localhost:3000" }));
   app.use("*", logger());
 
   // Public
@@ -34,7 +35,7 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   app.route("/api/agents", agentRoutes(db));
 
   // Dashboard (public)
-  app.route("/", dashboardRoutes(db, git));
+  app.route("/", dashboardRoutes(db, git, config.adminKey));
 
   // Admin
   const admin = new Hono();
@@ -89,8 +90,10 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
     return c.json(searchMemories(db, query, agent.id));
   });
   memoryApp.delete("/:id", (c) => {
+    const agent = c.get("agent");
     const id = Number(c.req.param("id"));
-    deleteMemory(db, id);
+    const deleted = deleteMemory(db, id, agent.id);
+    if (!deleted) return c.json({ error: "Memory not found" }, 404);
     return c.json({ ok: true });
   });
   authed.route("/memories", memoryApp);
