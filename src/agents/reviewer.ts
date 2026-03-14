@@ -33,6 +33,7 @@ interface StatusLogEntry {
 
 export class ReviewerAgent extends BaseAgent {
   get role() { return "reviewer"; }
+  private parseFailures = new Map<number, number>();
 
   protected async tick(): Promise<void> {
     const tasks = await this.get<Task[]>("/tasks?status=review");
@@ -85,8 +86,16 @@ export class ReviewerAgent extends BaseAgent {
     let result: ReviewResponse;
     try {
       result = this.parseAIJson<ReviewResponse>(response);
+      this.parseFailures.delete(task.id);
     } catch {
-      console.error(`[${this.config.id}] Failed to parse review response:`, response);
+      const fails = (this.parseFailures.get(task.id) ?? 0) + 1;
+      this.parseFailures.set(task.id, fails);
+      console.error(`[${this.config.id}] Failed to parse review response (${fails}/3):`, response.slice(0, 200));
+      if (fails >= 3) {
+        await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
+        await this.post("general", `Task #${task.id} FAILED: reviewer could not parse AI response after 3 attempts`);
+        this.parseFailures.delete(task.id);
+      }
       return;
     }
 
