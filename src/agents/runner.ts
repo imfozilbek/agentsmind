@@ -149,16 +149,20 @@ export class AgentRunner {
         if (!res.ok) continue;
         const subtasks = (await res.json()) as TaskSummary[];
         if (subtasks.length === 0) continue;
-        const allDone = subtasks.every(s => s.status === "done");
-        if (allDone) {
-          await fetch(`${this.serverUrl}/api/tasks/${parent.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.firstApiKey}` },
-            body: JSON.stringify({ status: "done" }),
-          });
-          console.log(`[watchdog] Parent task #${parent.id} completed — all ${subtasks.length} subtasks done`);
-          await this.postPublic("general", `Task #${parent.id} "${parent.title}" completed — all subtasks done!`);
-        }
+        const terminal = new Set(["done", "failed"]);
+        const allTerminal = subtasks.every(s => terminal.has(s.status));
+        if (!allTerminal) continue;
+
+        const hasFailed = subtasks.some(s => s.status === "failed");
+        const newStatus = hasFailed ? "failed" : "done";
+        await fetch(`${this.serverUrl}/api/tasks/${parent.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.firstApiKey}` },
+          body: JSON.stringify({ status: newStatus }),
+        });
+        const doneCount = subtasks.filter(s => s.status === "done").length;
+        console.log(`[watchdog] Parent task #${parent.id} → ${newStatus} (${doneCount}/${subtasks.length} done)`);
+        await this.postPublic("general", `Task #${parent.id} "${parent.title}" → ${newStatus} (${doneCount}/${subtasks.length} subtasks done)`);
       } catch { /* best-effort */ }
     }
   }
