@@ -356,11 +356,14 @@ export function getLeaves(db: Database): Commit[] {
   ).all();
 }
 
-export function getLineage(db: Database, hash: string): Commit[] {
+export function getLineage(db: Database, hash: string, maxDepth = 1000): Commit[] {
   const lineage: Commit[] = [];
+  const visited = new Set<string>();
   let current = getCommit(db, hash);
 
-  while (current) {
+  while (current && lineage.length < maxDepth) {
+    if (visited.has(current.hash)) break; // cycle guard
+    visited.add(current.hash);
     lineage.push(current);
     if (!current.parent_hash) break;
     current = getCommit(db, current.parent_hash);
@@ -499,8 +502,8 @@ export function searchMemories(db: Database, query: string, agentId?: string, li
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
 
-  const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
-  const params = words.map(w => `%${w}%`);
+  const conditions = words.map(() => "LOWER(content) LIKE ? ESCAPE '\\'").join(" AND ");
+  const params = words.map(w => `%${w.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
 
   if (agentId) {
     return db.query<Memory, (string | number)[]>(
@@ -546,7 +549,7 @@ export function searchCode(db: Database, query: string, limit = 10): CodeSearchR
     ).all(ftsQuery, limit);
   } catch {
     // Fallback to LIKE search if FTS fails
-    const conditions = words.map(() => "LOWER(content) LIKE ?").join(" AND ");
+    const conditions = words.map(() => "LOWER(content) LIKE ? ESCAPE '\\'").join(" AND ");
     const params = words.map(w => `%${w.toLowerCase()}%`);
 
     return db.query<CodeSearchResult, (string | number)[]>(
