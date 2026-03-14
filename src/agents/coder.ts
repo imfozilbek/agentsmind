@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, normalize } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
@@ -62,9 +62,12 @@ export class CoderAgent extends BaseAgent {
     );
     if (reworkTasks.length > 0) {
       const task = reworkTasks[0]!;
+      try {
+        await this.api("POST", `/tasks/${task.id}/claim-rework`, { agent_id: this.config.id });
+      } catch { return; } // another agent or status change
       console.log(`[${this.config.id}] Reworking task #${task.id}: "${task.title}" (changes requested)`);
       await this.post("general", `Reworking task #${task.id}: "${task.title}"`);
-      await this.api("PATCH", `/tasks/${task.id}`, { status: "in_progress" });
+
 
       const done = this.trackTask(task.id);
       try {
@@ -204,16 +207,22 @@ export class CoderAgent extends BaseAgent {
 
     let result: CodeResponse;
     try {
-      result = this.parseAIJson<CodeResponse>(response);
+      result = this.parseAIJson<CodeResponse>(response, (d: unknown) =>
+        !!d && typeof d === "object" && Array.isArray((d as any).files));
     } catch {
       console.error(`[${this.config.id}] Failed to parse coder response`);
       await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
       return;
     }
 
-    // Write files to workspace
+    // Write files to workspace (validate paths against traversal)
+    const repoBase = resolve(this.repoPath);
     for (const file of result.files) {
-      const filePath = join(this.repoPath, file.path);
+      const filePath = resolve(join(this.repoPath, normalize(file.path)));
+      if (!filePath.startsWith(repoBase + "/")) {
+        console.error(`[${this.config.id}] Path traversal blocked: ${file.path}`);
+        continue;
+      }
       const dir = join(filePath, "..");
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       await Bun.write(filePath, file.content);

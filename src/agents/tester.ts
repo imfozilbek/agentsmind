@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, normalize } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
 
@@ -149,7 +149,11 @@ export class TesterAgent extends BaseAgent {
   }
 
   private async writeFile(filePath: string, content: string): Promise<void> {
-    const fullPath = join(this.repoPath, filePath);
+    const fullPath = resolve(join(this.repoPath, normalize(filePath)));
+    if (!fullPath.startsWith(resolve(this.repoPath) + "/")) {
+      console.error(`[${this.config.id}] Path traversal blocked: ${filePath}`);
+      return;
+    }
     const dir = join(fullPath, "..");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     await Bun.write(fullPath, content);
@@ -158,9 +162,13 @@ export class TesterAgent extends BaseAgent {
   private async runTests(testFiles: string[]): Promise<TestResult> {
     const absolutePaths = testFiles.map(f => join(this.repoPath, f));
 
+    const safeEnv: Record<string, string | undefined> = { ...process.env, NO_COLOR: "1" };
+    // Strip secrets from test subprocess
+    delete safeEnv.AI_API_KEY;
+    delete safeEnv.ADMIN_KEY;
     const proc = Bun.spawnSync(["bun", "test", ...absolutePaths], {
       cwd: this.repoPath,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: safeEnv,
       timeout: 30_000,
     });
 
