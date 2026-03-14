@@ -34,6 +34,11 @@ export class PlannerAgent extends BaseAgent {
       const subtasks = await this.get<Task[]>(`/tasks/${task.id}/subtasks`);
       if (subtasks.length > 0) continue;
 
+      // Atomic claim: set to planned first to prevent duplicate planning
+      try {
+        await this.api("PATCH", `/tasks/${task.id}`, { status: "planned" });
+      } catch { continue; } // another planner claimed it
+
       console.log(`[${this.config.id}] Planning: "${task.title}"`);
       await this.plan(task);
     }
@@ -62,7 +67,6 @@ export class PlannerAgent extends BaseAgent {
       });
     }
 
-    await this.api("PATCH", `/tasks/${task.id}`, { status: "planned" });
     await this.post("general", `Planned task #${task.id} "${task.title}" → ${subtasks.length} subtasks`);
     console.log(`[${this.config.id}] Created ${subtasks.length} subtasks for task #${task.id}`);
   }
