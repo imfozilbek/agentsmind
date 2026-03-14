@@ -90,7 +90,7 @@ export function createApp(db: Database, git: GitRepo, config: ServerConfig) {
   memoryApp.get("/", (c) => {
     const agent = c.get("agent");
     const type = c.req.query("type");
-    const limit = Number(c.req.query("limit")) || 20;
+    const limit = Math.max(1, Math.min(Number(c.req.query("limit")) || 20, 200));
     return c.json(getMemories(db, agent.id, type, limit));
   });
   memoryApp.get("/search", (c) => {
