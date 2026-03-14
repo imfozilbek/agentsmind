@@ -56,13 +56,42 @@ export class CoderAgent extends BaseAgent {
   }
 
   protected async tick(): Promise<void> {
+    // Priority: rework tasks with changes_requested first
+    const reworkTasks = await this.get<Task[]>(
+      `/tasks?status=changes_requested&agent=${this.config.id}`
+    );
+    if (reworkTasks.length > 0) {
+      const task = reworkTasks[0]!;
+      console.log(`[${this.config.id}] Reworking task #${task.id}: "${task.title}" (changes requested)`);
+      await this.post("general", `Reworking task #${task.id}: "${task.title}"`);
+      await this.api("PATCH", `/tasks/${task.id}`, { status: "in_progress" });
+
+      const done = this.trackTask(task.id);
+      try {
+        await this.implement(task);
+        await done();
+      } catch (err) {
+        console.error(`[${this.config.id}] Failed rework task #${task.id}:`, err);
+        await this.reportTaskFailed(task.id, String(err));
+        await this.api("PATCH", `/tasks/${task.id}`, { status: "failed" });
+        await this.post("general", `Failed rework task #${task.id}: ${err}`);
+      }
+      return;
+    }
+
+    // Pick new tasks
     const tasks = await this.get<Task[]>("/tasks/ready");
     const available = tasks.filter(t => t.parent_id && !t.assigned_to);
 
     if (available.length === 0) return;
 
     const task = available[0]!;
-    await this.api("POST", `/tasks/${task.id}/assign`, { agent_id: this.config.id });
+    try {
+      await this.api("POST", `/tasks/${task.id}/assign`, { agent_id: this.config.id });
+    } catch (err) {
+      if (String(err).includes("409")) return; // another agent claimed it
+      throw err;
+    }
     console.log(`[${this.config.id}] Working on: "${task.title}"`);
     await this.post("general", `Taking task #${task.id}: "${task.title}"`);
 
@@ -142,6 +171,21 @@ export class CoderAgent extends BaseAgent {
         context += `\n- [${m.type}] ${m.content}`;
       }
       context += "\n\n--- END MEMORY ---";
+    }
+
+    // Review feedback (for rework tasks)
+    if (task.commit_hash) {
+      try {
+        const reviews = await this.get<{ status: string; comment: string }[]>(
+          `/reviews/${task.commit_hash}`
+        );
+        const feedback = reviews.find(r => r.status === "changes_requested");
+        if (feedback) {
+          context += "\n\n--- REVIEWER FEEDBACK (must address these issues) ---";
+          context += `\n${feedback.comment}`;
+          context += "\n\n--- END REVIEWER FEEDBACK ---";
+        }
+      } catch { /* best-effort */ }
     }
 
     return context;

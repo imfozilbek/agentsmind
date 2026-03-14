@@ -103,7 +103,7 @@ export class ReviewerAgent extends BaseAgent {
       await this.api("PATCH", `/tasks/${task.id}`, { status: "done" });
       await this.post("general", `Approved task #${task.id}: "${task.title}"`);
     } else {
-      await this.api("PATCH", `/tasks/${task.id}`, { status: "in_progress" });
+      await this.api("PATCH", `/tasks/${task.id}`, { status: "changes_requested" });
       await this.post("general", `Changes requested on task #${task.id} (round ${reviewCount + 1}/${MAX_REVIEW_ROUNDS}): ${result.comment}`);
       await this.remember(
         `Review issue on "${task.title}": ${result.comment}`,
