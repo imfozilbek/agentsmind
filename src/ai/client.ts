@@ -75,12 +75,17 @@ class RateLimiter {
 
 let globalLimiter: RateLimiter | null = null;
 
+let limiterConfig: { concurrency: number; interval: number } | null = null;
+
 function getLimiter(config: AIConfig): RateLimiter {
+  const concurrency = config.maxConcurrency ?? 2;
+  const interval = config.minIntervalMs ?? 1000;
+
   if (!globalLimiter) {
-    globalLimiter = new RateLimiter(
-      config.maxConcurrency ?? 2,
-      config.minIntervalMs ?? 1000,
-    );
+    globalLimiter = new RateLimiter(concurrency, interval);
+    limiterConfig = { concurrency, interval };
+  } else if (limiterConfig && (limiterConfig.concurrency !== concurrency || limiterConfig.interval !== interval)) {
+    console.warn(`[AI] Rate limiter already initialized with concurrency=${limiterConfig.concurrency}, interval=${limiterConfig.interval}ms — ignoring new config (${concurrency}, ${interval}ms)`);
   }
   return globalLimiter;
 }

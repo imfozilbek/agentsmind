@@ -123,9 +123,13 @@ export abstract class BaseAgent {
     return response.content;
   }
 
-  protected parseAIJson<T>(response: string): T {
+  protected parseAIJson<T>(response: string, validate?: (data: unknown) => boolean): T {
     const cleaned = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    return JSON.parse(cleaned);
+    const parsed: unknown = JSON.parse(cleaned);
+    if (validate && !validate(parsed)) {
+      throw new Error("AI response failed shape validation");
+    }
+    return parsed as T;
   }
 
   // ─── Metrics ───

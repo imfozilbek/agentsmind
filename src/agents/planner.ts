@@ -47,7 +47,7 @@ export class PlannerAgent extends BaseAgent {
 
     let subtasks: Subtask[];
     try {
-      subtasks = this.parseAIJson<Subtask[]>(response);
+      subtasks = this.parseAIJson<Subtask[]>(response, Array.isArray);
     } catch {
       console.error(`[${this.config.id}] Failed to parse planner response:`, response);
       return;
