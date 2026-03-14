@@ -1,9 +1,15 @@
 import { Hono } from "hono";
 import { html, raw } from "hono/html";
 import type { Database } from "bun:sqlite";
+import { timingSafeEqual } from "node:crypto";
 import { GitRepo, isValidHash } from "../git/repo.ts";
 import * as q from "../db/queries.ts";
 import { broadcast } from "./ws.ts";
+
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
   const app = new Hono();
@@ -13,7 +19,7 @@ export function dashboardRoutes(db: Database, git: GitRepo, adminKey?: string) {
     app.use("/api/dashboard/*", async (c, next) => {
       if (["POST", "PATCH", "DELETE"].includes(c.req.method)) {
         const header = c.req.header("Authorization");
-        if (!header?.startsWith("Bearer ") || header.slice(7) !== adminKey) {
+        if (!header?.startsWith("Bearer ") || !safeCompare(header.slice(7) ?? "", adminKey)) {
           return c.json({ error: "Admin authentication required" }, 401);
         }
       }
@@ -600,6 +606,7 @@ const CSS = `
   .task-card.review { border-left-color: var(--yellow); }
   .task-card.done { border-left-color: var(--green); }
   .task-card.failed { border-left-color: var(--red); }
+  .task-card.changes_requested { border-left-color: var(--orange); }
 
   .task-title { font-weight: 500; margin-bottom: 4px; }
   .task-meta { color: var(--text-dim); font-size: 11px; }
@@ -873,6 +880,7 @@ const CSS = `
   .status-badge.review { background: rgba(251,191,36,0.15); color: var(--yellow); }
   .status-badge.done { background: rgba(74,222,128,0.15); color: var(--green); }
   .status-badge.failed { background: rgba(248,113,113,0.15); color: var(--red); }
+  .status-badge.changes_requested { background: rgba(251,146,60,0.15); color: var(--orange); }
 
   .subtask-list {
     margin-top: 8px;
@@ -1650,7 +1658,7 @@ const JS = `
       return p.status;
     }
 
-    const columns = { todo: [], planned: [], in_progress: [], review: [], done: [] };
+    const columns = { todo: [], planned: [], in_progress: [], review: [], changes_requested: [], done: [], failed: [] };
     for (var i = 0; i < parentTasks.length; i++) {
       var t = parentTasks[i];
       var st = getParentStatus(t);
