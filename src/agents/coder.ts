@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, resolve, normalize } from "node:path";
 import { BaseAgent } from "./base.ts";
 import type { Task } from "../db/queries.ts";
@@ -254,7 +254,7 @@ export class CoderAgent extends BaseAgent {
       console.error(`[${this.config.id}] Push failed:`, err);
     } finally {
       const f = Bun.file(bundlePath);
-      if (await f.exists()) { try { await Bun.file(bundlePath).unlink?.(); } catch { /* ignore */ } }
+      try { unlinkSync(bundlePath); } catch { /* ignore */ }
     }
 
     // Index files for RAG
