@@ -550,7 +550,7 @@ export function searchCode(db: Database, query: string, limit = 10): CodeSearchR
   } catch {
     // Fallback to LIKE search if FTS fails
     const conditions = words.map(() => "LOWER(content) LIKE ? ESCAPE '\\'").join(" AND ");
-    const params = words.map(w => `%${w.toLowerCase()}%`);
+    const params = words.map(w => `%${w.toLowerCase().replace(/%/g, "\\%").replace(/_/g, "\\_")}%`);
 
     return db.query<CodeSearchResult, (string | number)[]>(
       `SELECT file_path, content, commit_hash, 0 as rank
