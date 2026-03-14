@@ -67,7 +67,8 @@ export function taskRoutes(db: Database) {
     const body = await c.req.json<Partial<Pick<q.Task, "status" | "assigned_to" | "title" | "description" | "priority" | "commit_hash">>>();
     try {
       const updated = q.updateTask(db, id, body);
-      broadcast({ type: "task_updated", data: updated });
+      const { output: _output, ...broadcastData } = updated ?? {};
+      broadcast({ type: "task_updated", data: broadcastData });
       return c.json(updated);
     } catch (e: unknown) {
       return c.json({ error: (e as Error).message }, 400);
