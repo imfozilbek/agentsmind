@@ -35,11 +35,18 @@ interface TaskSummary {
 
 export class AgentRunner {
   private agents: BaseAgent[] = [];
+  private apiKeys = new Map<string, string>();
   private serverUrl: string;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private config: RunnerConfig) {
     this.serverUrl = config.serverUrl;
+  }
+
+  private get firstApiKey(): string {
+    const key = this.apiKeys.values().next().value;
+    if (!key) throw new Error("No agents registered");
+    return key;
   }
 
   async start(): Promise<void> {
@@ -51,6 +58,7 @@ export class AgentRunner {
       for (let i = 0; i < count; i++) {
         const id = `${role}-${i + 1}`;
         const apiKey = await this.register(id, role);
+        this.apiKeys.set(id, apiKey);
 
         const agent = new AgentClass({
           id,
@@ -131,7 +139,7 @@ export class AgentRunner {
   private async fetchTasks(status: string): Promise<TaskSummary[]> {
     const res = await fetch(`${this.serverUrl}/api/tasks?status=${status}&limit=200`, {
       headers: {
-        Authorization: `Bearer ${(this.agents[0] as any)?.config.apiKey}`,
+        Authorization: `Bearer ${this.firstApiKey}`,
       },
     });
     if (!res.ok) return [];
@@ -143,7 +151,7 @@ export class AgentRunner {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${(this.agents[0] as any)?.config.apiKey}`,
+        Authorization: `Bearer ${this.firstApiKey}`,
       },
       body: JSON.stringify({ status: "todo", assigned_to: null }),
     });
@@ -155,7 +163,7 @@ export class AgentRunner {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${(this.agents[0] as any)?.config.apiKey}`,
+          Authorization: `Bearer ${this.firstApiKey}`,
         },
         body: JSON.stringify({ content }),
       });
@@ -186,14 +194,11 @@ export class AgentRunner {
   }
 
   private async apiPublic(method: string, path: string, body?: unknown): Promise<unknown> {
-    const firstAgent = this.agents[0];
-    if (!firstAgent) throw new Error("No agents registered");
-
     const res = await fetch(`${this.serverUrl}/api${path}`, {
       method,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${(firstAgent as any).config.apiKey}`,
+        Authorization: `Bearer ${this.firstApiKey}`,
       },
       body: body ? JSON.stringify(body) : undefined,
     });
